@@ -277,6 +277,13 @@ def build_prompt(
                 # main_part and tail for internal_input come from split_main_text
                 # which now returns main_part and the 3 lines before the last one.
                 main_part, tail = split_main_text(main_text)
+
+                # --- Truncate main_part based on max_context_length setting ---
+                settings = load_settings()
+                max_len = settings.get("max_context_length", DEFAULT_SETTINGS["max_context_length"])
+                if len(main_part) > max_len:
+                    main_part = main_part[-max_len:]
+                # --- End of truncation logic ---
             else:
                 # This case should ideally not happen if determine_task_and_instruction works correctly
                 # (i.e., CONT task implies num_content_lines >= 4).

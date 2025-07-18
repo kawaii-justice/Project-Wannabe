@@ -21,6 +21,7 @@ DEFAULT_SETTINGS = {
     "transfer_to_main_mode": "cursor", # "cursor", "next_line_always", "next_line_eol"
     "transfer_newlines_before": 0, # Number of empty lines to insert before transfer in next_line modes
     "cont_prompt_order": "reference_first", # "text_first" or "reference_first" (Default: reference first)
+    "max_context_length": 8192, # Max context length for the main text part in characters
     "default_rating": "general" # Add default rating setting: "general" or "r18"
 }
 

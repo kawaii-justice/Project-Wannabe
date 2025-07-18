@@ -66,6 +66,12 @@ class GenerationParamsDialog(QDialog):
         self.max_length_generate_spinbox.setValue(self.current_settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"]))
         form_layout.addRow("最大長 (小説生成):", self.max_length_generate_spinbox)
 
+        # max_context_length
+        self.max_context_length_spinbox = QSpinBox()
+        self.max_context_length_spinbox.setRange(1, 32768) # Allow larger values
+        self.max_context_length_spinbox.setValue(self.current_settings.get("max_context_length", DEFAULT_SETTINGS["max_context_length"]))
+        form_layout.addRow("最大本文コンテキスト長 (継続時):", self.max_context_length_spinbox)
+
         # temperature
         self.temp_spinbox = QDoubleSpinBox()
         self.temp_spinbox.setRange(0.0, 5.0) # Allow higher temps if needed
@@ -243,6 +249,7 @@ class GenerationParamsDialog(QDialog):
         # self.current_settings["max_length"] = self.max_length_spinbox.value() # Removed old setting
         self.current_settings["max_length_idea"] = self.max_length_idea_spinbox.value()
         self.current_settings["max_length_generate"] = self.max_length_generate_spinbox.value()
+        self.current_settings["max_context_length"] = self.max_context_length_spinbox.value()
         self.current_settings["temperature"] = self.temp_spinbox.value()
         self.current_settings["min_p"] = self.min_p_spinbox.value()
         self.current_settings["top_p"] = self.top_p_spinbox.value()

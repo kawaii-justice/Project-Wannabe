@@ -15,6 +15,7 @@
     "transfer_to_main_mode": "next_line_eol",
     "transfer_newlines_before": 0,
     "cont_prompt_order": "reference_first",
+    "max_context_length": 8192,
     "default_rating": "general",
     "max_length": 300,
     "font_family": "ＭＳ Ｐ明朝",
