@@ -84,9 +84,10 @@ def format_metadata(metadata: Dict[str, str | List[str]], mode: str = "generate"
 
 def split_main_text(text: str) -> tuple[str, str]:
     """
-    Splits the input text into the main part and the tail (the 3 lines
-    preceding the last content line), preserving all original lines.
-    The last content line itself is NOT part of the return value.
+    Splits the input text into the main part and the tail, preserving all
+    original lines. The tail is defined as the 3 lines ending at the
+    second-to-last content line. The last content line itself is NOT part
+    of the return value.
 
     Args:
         text: The main text input.
@@ -107,18 +108,20 @@ def split_main_text(text: str) -> tuple[str, str]:
     if len(content_line_indices) < 4:
         return "", ""
 
-    # The split point is relative to the last content line
-    last_content_line_index = content_line_indices[-1]
+    # The tail is based on the second-to-last content line.
+    # This is the end point of the tail (inclusive).
+    tail_end_index = content_line_indices[-2]
 
-    # The tail is the 3 lines immediately preceding the last content line
-    tail_start_index = last_content_line_index - 3
+    # The tail starts 2 lines before its end point (for a total of 3 lines).
+    tail_start_index = tail_end_index - 2
     if tail_start_index < 0:
         tail_start_index = 0
-    
-    tail_lines = lines[tail_start_index:last_content_line_index]
+
+    # The tail includes the end line, so we slice up to end_index + 1.
+    tail_lines = lines[tail_start_index : tail_end_index + 1]
     tail_text = "\n".join(tail_lines)
 
-    # The main part is everything before the tail's start
+    # The main part is everything before the tail's start.
     main_part_lines = lines[:tail_start_index]
     main_part_text = "\n".join(main_part_lines)
 
