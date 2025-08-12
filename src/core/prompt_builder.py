@@ -76,7 +76,7 @@ def format_metadata(metadata: Dict[str, str | List[str]], mode: str = "generate"
             # Handle string types (title, synopsis, setting, plot, dialogue_level)
             # Dynamic prompts for these are handled in build_prompt before formatting
             elif isinstance(value, str) and value.strip():
-                 output.append(f"# {japanese_name}:\n{value.strip()}") # Keep original value here
+                output.append(f"# {japanese_name}:\n{value.strip()}") # Keep original value here
             # Add other type handling here if necessary
 
     return "\n\n".join(output)
@@ -84,47 +84,45 @@ def format_metadata(metadata: Dict[str, str | List[str]], mode: str = "generate"
 
 def split_main_text(text: str) -> tuple[str, str]:
     """
-    Splits the input text into the main part and the last 3 lines (tail)
-    intended for the internal_input. The very last line is excluded.
+    Splits the input text into the main part and the tail (the 3 lines
+    preceding the last content line), preserving all original lines.
+    The last content line itself is NOT part of the return value.
 
     Args:
         text: The main text input.
 
     Returns:
-        A tuple containing (main_part_text, tail_text_for_input).
+        A tuple containing (main_part_text, tail_text).
         Returns ("", "") if the text has less than 4 content lines,
-        or if the input text is empty or only whitespace.
+        as a split is not meaningful.
     """
-    if not text or not text.strip():
+    if not text:
         return "", ""
 
     lines = text.splitlines()
-    content_lines = [line for line in lines if line.strip()]
-    num_content_lines = len(content_lines)
+    # Find indices of all lines with content
+    content_line_indices = [i for i, line in enumerate(lines) if line.strip()]
 
-    if num_content_lines < 4:
-        # If less than 4 content lines, no main_part or tail_for_input is generated.
-        # The entire main_text will be used as prompt_suffix in build_prompt.
+    # If not enough content for a split, return empty parts.
+    if len(content_line_indices) < 4:
         return "", ""
-    else:
-        # If 4 or more content lines:
-        # tail_for_input: last 4th, 3rd, 2nd lines (3 lines)
-        # last_line_for_suffix: the very last line (1 line) - handled in build_prompt
-        # main_part: all lines before the last 4 lines
 
-        # Get the last 4 lines of content
-        last_four_content_lines = content_lines[-4:]
+    # The split point is relative to the last content line
+    last_content_line_index = content_line_indices[-1]
 
-        # tail_for_input: the first 3 of the last 4 content lines
-        tail_for_input_lines = last_four_content_lines[:-1] # Exclude the very last line
+    # The tail is the 3 lines immediately preceding the last content line
+    tail_start_index = last_content_line_index - 3
+    if tail_start_index < 0:
+        tail_start_index = 0
+    
+    tail_lines = lines[tail_start_index:last_content_line_index]
+    tail_text = "\n".join(tail_lines)
 
-        # main_part: all content lines before the last 4
-        main_part_lines = content_lines[:-4]
+    # The main part is everything before the tail's start
+    main_part_lines = lines[:tail_start_index]
+    main_part_text = "\n".join(main_part_lines)
 
-        main_part_text = "\n".join(main_part_lines).strip()
-        tail_text_for_input = "\n".join(tail_for_input_lines).strip()
-
-        return main_part_text, tail_text_for_input
+    return main_part_text, tail_text
 
 
 def determine_task_and_instruction(
@@ -170,15 +168,15 @@ def determine_task_and_instruction(
         if not has_main_text:
             task_type = "GEN_INFO" if has_any_metadata_for_gen_cont else "GEN_ZERO"
         else: # has_main_text
-            # Count lines in main_text
-            lines = [line for line in main_text.splitlines() if line.strip()]
-            num_lines = len(lines)
+            # Count content lines in main_text to decide between GEN and CONT
+            content_lines = [line for line in main_text.splitlines() if line.strip()]
+            num_content_lines = len(content_lines)
 
-            if num_lines < 4:
-                # If less than 4 lines, treat as GEN task
+            if num_content_lines < 4:
+                # If less than 4 content lines, treat as GEN task
                 task_type = "GEN_INFO" if has_any_metadata_for_gen_cont else "GEN_ZERO"
             else:
-                # If 4 lines or more, treat as CONT task
+                # If 4 or more content lines, treat as CONT task
                 task_type = "CONT_INFO" if has_any_metadata_for_gen_cont else "CONT_ZERO"
     elif current_mode == "idea":
         task_type = "IDEA_INFO" if has_any_metadata_for_idea else "IDEA_ZERO"
@@ -255,51 +253,43 @@ def build_prompt(
     # --- Build internal_input and prompt_suffix based on task type ---
     if task_type.startswith("GEN"):
         # GEN tasks: internal_input is metadata_input_string.
-        # If main_text exists (meaning it was < 4 lines and classified as GEN),
-        # it becomes the prompt_suffix.
+        # If main_text exists (less than 4 content lines), it becomes the prompt_suffix.
+        # Whitespace and newlines are preserved.
         internal_input = metadata_input_string
-        if main_text.strip():
-            prompt_suffix = main_text.strip()
+        if main_text:
+            prompt_suffix = main_text
     elif task_type.startswith("IDEA"):
         # IDEA tasks: internal_input is metadata_input_string. No prompt_suffix from main_text.
         internal_input = metadata_input_string
         # IDEA tasks might have their own suffix logic via IdeaProcessor, but that's external to build_prompt's main_text handling.
     elif task_type.startswith("CONT"):
-        # CONT tasks: complex structure with main_part, tail for input, and last line for suffix.
+        # CONT tasks: Preserve whitespace. Split text into main_part, tail, and suffix.
         try:
-            # Get content lines to correctly extract the last line for suffix
-            content_lines = [line for line in main_text.splitlines() if line.strip()]
-            num_content_lines = len(content_lines)
+            # Find the last content line for the suffix
+            lines = main_text.splitlines()
+            last_content_line = ""
+            for line in reversed(lines):
+                if line.strip():
+                    last_content_line = line
+                    break
+            prompt_suffix = last_content_line.strip()
 
-            if num_content_lines >= 4:
-                # Extract the very last line for prompt_suffix
-                prompt_suffix = content_lines[-1].strip()
-                # main_part and tail for internal_input come from split_main_text
-                # which now returns main_part and the 3 lines before the last one.
-                main_part, tail = split_main_text(main_text)
+            # Split the rest of the text using the new logic (preserves whitespace)
+            main_part, tail = split_main_text(main_text)
 
-                # --- Truncate main_part based on max_context_length setting ---
-                settings = load_settings()
-                max_len = settings.get("max_context_length", DEFAULT_SETTINGS["max_context_length"])
-                if len(main_part) > max_len:
-                    main_part = main_part[-max_len:]
-                # --- End of truncation logic ---
-            else:
-                # This case should ideally not happen if determine_task_and_instruction works correctly
-                # (i.e., CONT task implies num_content_lines >= 4).
-                # If it does, it's an unexpected state, so we'll treat it defensively.
-                # No main_part or tail for internal_input, full main_text as suffix.
-                main_part = ""
-                tail = ""
-                prompt_suffix = main_text.strip() # Fallback: use full text as suffix
+            # --- Truncate main_part based on max_context_length setting ---
+            settings = load_settings()
+            max_len = settings.get("max_context_length", DEFAULT_SETTINGS["max_context_length"])
+            if len(main_part) > max_len:
+                main_part = main_part[-max_len:]
+            # --- End of truncation logic ---
 
         except Exception as e:
             print(f"Error processing main text for CONT task: {e}")
-            main_part = ""
-            tail = ""
-            prompt_suffix = main_text.strip() # Fallback: use full text as suffix
+            main_part, tail, prompt_suffix = "", "", main_text # Fallback
 
         # Create blocks (handle empty cases by setting to None)
+        # Do not strip main_part to preserve its whitespace
         main_part_block = f"【本文】\n```\n{main_part}\n```" if main_part else None
         reference_block = f"【参考情報】\n```\n{metadata_input_string}\n```" if metadata_input_string else None
         authors_note_block = f"【オーサーズノート】\n```\n{authors_note.strip()}\n```" if authors_note.strip() else None
@@ -318,11 +308,11 @@ def build_prompt(
         if authors_note_block:
             input_parts.append(authors_note_block)
 
-        # 3. Add Tail Text (only if it's not empty after stripping)
-        if tail: # tail is already stripped by split_main_text
+        # 3. Add Tail Text (tail preserves whitespace from split_main_text)
+        if tail:
             input_parts.append(tail)
 
-        # Join parts with a single newline, matching integrate_authors_notes.py
+        # Join parts with a single newline
         # Filter out None values before joining
         internal_input = "\n".join(filter(None, input_parts))
 
