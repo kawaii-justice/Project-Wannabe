@@ -128,6 +128,33 @@ def split_main_text(text: str) -> tuple[str, str]:
     return main_part_text, tail_text
 
 
+def is_sentence_complete(text: str) -> bool:
+    """
+    Determines if the given text ends with a complete sentence.
+    A sentence is considered complete if, after stripping trailing whitespace (excluding newlines),
+    it ends with a period (。), a closing bracket (」), or a newline character (\n).
+    """
+    if not text:
+        return False
+
+    # 末尾から改行文字を除く空白文字をすべて取り除く
+    # rstrip() はデフォルトで全ての空白文字を削除するため、改行文字を考慮する場合は手動で処理
+    stripped_text = text.rstrip(" \t") # スペースとタブのみ削除
+
+    # 処理後の文字列の末尾が、以下のいずれかの文字で終わっている場合、「完結している」と判定
+    # 改行文字は、rstrip()で削除されていない元のテキストの末尾で確認する必要がある
+    if stripped_text.endswith("。") or \
+       stripped_text.endswith("」"):
+        return True
+    
+    # 元のテキストの最後の文字が改行であるかを確認
+    # ただし、改行のみの行は完結とみなさないため、strip()で空になる場合は除外
+    if text.endswith("\n") and text.strip(): # テキストが空でないことを確認
+        return True
+
+    return False
+
+
 def determine_task_and_instruction(
     current_mode: str,
     main_text: str,
@@ -268,17 +295,46 @@ def build_prompt(
     elif task_type.startswith("CONT"):
         # CONT tasks: Preserve whitespace. Split text into main_part, tail, and suffix.
         try:
-            # Find the last content line for the suffix
-            lines = main_text.splitlines()
-            last_content_line = ""
-            for line in reversed(lines):
-                if line.strip():
-                    last_content_line = line
-                    break
-            prompt_suffix = last_content_line.strip()
+            if is_sentence_complete(main_text):
+                # 条件A: 文章が完結している場合
+                prompt_suffix = "" # 空文字列に設定
 
-            # Split the rest of the text using the new logic (preserves whitespace)
-            main_part, tail = split_main_text(main_text)
+                lines = main_text.splitlines()
+                # 最後のコンテンツ行のインデックスを見つける
+                last_content_line_index = -1
+                for i in range(len(lines) - 1, -1, -1):
+                    if lines[i].strip():
+                        last_content_line_index = i
+                        break
+                
+                if last_content_line_index != -1:
+                    # 最後のコンテンツ行を含めて、その行で終わる合計3行分をtailとして切り出す
+                    tail_end_index = last_content_line_index
+                    tail_start_index = max(0, tail_end_index - 2) # 0未満にならないように調整
+
+                    tail_lines = lines[tail_start_index : tail_end_index + 1]
+                    tail = "\n".join(tail_lines)
+
+                    main_part_lines = lines[:tail_start_index]
+                    main_part = "\n".join(main_part_lines)
+                else:
+                    # main_textが空行のみの場合など、コンテンツ行がない場合
+                    main_part = ""
+                    tail = ""
+
+            else:
+                # 条件B: 文章が途中で終わっている場合 (既存のロジックを維持)
+                # Find the last content line for the suffix
+                lines = main_text.splitlines()
+                last_content_line = ""
+                for line in reversed(lines):
+                    if line.strip():
+                        last_content_line = line
+                        break
+                prompt_suffix = last_content_line.strip()
+
+                # Split the rest of the text using the new logic (preserves whitespace)
+                main_part, tail = split_main_text(main_text)
 
             # --- Truncate main_part based on max_context_length setting ---
             settings = load_settings()
