@@ -33,7 +33,9 @@ class KoboldClient:
         prompt: str,
         max_length: Optional[int] = None, # Add max_length parameter
         generation_params: Optional[Dict[str, Any]] = None,
-        stop_sequence: Optional[List[str]] = None # Add stop_sequence parameter
+        stop_sequence: Optional[List[str]] = None, # Add stop_sequence parameter
+        banned_tokens: Optional[List[int]] = None, # Add banned_tokens parameter
+        current_mode: Optional[str] = None # Add current_mode parameter to know if it's generate or idea
     ) -> AsyncGenerator[str, None]:
         """
         Sends a prompt to the KoboldCpp streaming API and yields generated tokens.
@@ -76,12 +78,25 @@ class KoboldClient:
             "prompt": prompt,
             **params_to_send # Unpack base parameters into payload
         }
-
+        
+        # For GEN tasks (generate mode), set ban_eos_token to True
+        if current_mode == "generate":
+            payload["ban_eos_token"] = True
+        
+        # Handle custom banned_tokens if provided (using logit_bias)
+        if banned_tokens is not None:
+            # Initialize logit_bias if not present
+            if "logit_bias" not in payload:
+                payload["logit_bias"] = {}
+            # Add each token with -1000 bias
+            for token in banned_tokens:
+                payload["logit_bias"][str(token)] = -1000
+            
         # Set max_length based on the argument if provided
         if max_length is not None:
             payload["max_length"] = max_length
         # Else, KoboldCpp might use its own default if not provided
-
+        
         # Filter out None values if KoboldCpp doesn't like them
         payload = {k: v for k, v in payload.items() if v is not None}
 
@@ -91,10 +106,10 @@ class KoboldClient:
             async with self.client.stream("POST", api_url, json=payload) as response:
                 # Check for non-200 status codes which indicate an immediate error
                 if response.status_code != 200:
-                     error_content = await response.aread()
-                     raise KoboldClientError(
-                         f"API Error: Status {response.status_code} - {error_content.decode()}"
-                     )
+                    error_content = await response.aread()
+                    raise KoboldClientError(
+                        f"API Error: Status {response.status_code} - {error_content.decode()}"
+                    )
 
                 # Process the SSE stream
                 async for line in response.aiter_lines():

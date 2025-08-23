@@ -339,9 +339,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "生成中", "現在、無限生成が実行中です。停止してから単発生成を開始してください。")
             return
         elif self.generation_status != "idle":
-             # Handle unexpected status (should ideally not happen)
-             QMessageBox.warning(self, "不明な状態", f"予期せぬ生成ステータスです: {self.generation_status}")
-             return
+            # Handle unexpected status (should ideally not happen)
+            QMessageBox.warning(self, "不明な状態", f"予期せぬ生成ステータスです: {self.generation_status}")
+            return
 
         # Only proceed if status is idle
         # --- IDEA Mode Logic ---
@@ -387,7 +387,7 @@ class MainWindow(QMainWindow):
 
             # IDEA "all" item or fast mode should stream
             if selected_item_key == "all" or fast_mode_enabled:
-                 self.generation_task = asyncio.ensure_future(
+                self.generation_task = asyncio.ensure_future(
                     self._run_single_generation(final_prompt, stop_sequence=stop_sequence)
                 )
             # else: # Safe Mode (specific item, not fast)
@@ -446,8 +446,8 @@ class MainWindow(QMainWindow):
             # If idle, start infinite generation.
             self._start_infinite_generation()
         else: # Handle unexpected status
-             QMessageBox.warning(self, "不明な状態", f"予期せぬ生成ステータスです: {self.generation_status}")
-             self.infinite_gen_action.setChecked(False) # Ensure button is unchecked
+            QMessageBox.warning(self, "不明な状態", f"予期せぬ生成ステータスです: {self.generation_status}")
+            self.infinite_gen_action.setChecked(False) # Ensure button is unchecked
 
     def _start_infinite_generation(self):
         """Starts the infinite generation loop."""
@@ -508,8 +508,8 @@ class MainWindow(QMainWindow):
             self.infinite_gen_action.setChecked(True)
             self.status_bar.showMessage("無限生成中 (F5で停止)...")
         elif self.generation_status == "single_running":
-             self.infinite_gen_action.setChecked(False) # Ensure infinite is unchecked
-             self.status_bar.showMessage("単発生成中...")
+            self.infinite_gen_action.setChecked(False) # Ensure infinite is unchecked
+            self.status_bar.showMessage("単発生成中...")
 
         # Keep actions enabled so they can be used to stop generation
         # self.single_gen_action.setEnabled(False) # Keep enabled
@@ -545,7 +545,8 @@ class MainWindow(QMainWindow):
             async for token in self.kobold_client.generate_stream(
                 prompt,
                 max_length=current_max_length,
-                stop_sequence=stop_sequence # Pass the determined stop sequence
+                stop_sequence=stop_sequence, # Pass the determined stop sequence
+                current_mode=self.current_mode # Pass current mode to determine banned tokens
             ):
                 self._append_to_output(token)
                 await asyncio.sleep(0.001) # Yield control briefly
@@ -563,10 +564,10 @@ class MainWindow(QMainWindow):
             self._append_to_output(f"\n--- {task_name}がキャンセルされました ---\n")
             self.status_bar.showMessage(f"{task_name} キャンセル", 3000)
         except Exception as e:
-             error_msg = f"\n--- {task_name}中に予期せぬエラーが発生しました: {e} ---\n"
-             print(error_msg)
-             self._append_to_output(error_msg)
-             self.status_bar.showMessage("予期せぬエラー", 3000)
+            error_msg = f"\n--- {task_name}中に予期せぬエラーが発生しました: {e} ---\n"
+            print(error_msg)
+            self._append_to_output(error_msg)
+            self.status_bar.showMessage("予期せぬエラー", 3000)
         finally:
             # Reset status after single run finishes or errors out
             self.generation_status = "idle"
@@ -588,7 +589,8 @@ class MainWindow(QMainWindow):
             async for token in self.kobold_client.generate_stream(
                 prompt,
                 max_length=current_max_length,
-                stop_sequence=stop_sequence
+                stop_sequence=stop_sequence,
+                current_mode=self.current_mode
             ):
                 full_output += token
                 # Optional: Add a small sleep if needed, but not strictly necessary here
@@ -623,10 +625,10 @@ class MainWindow(QMainWindow):
             self._append_to_output(f"\n--- {task_name}がキャンセルされました ---\n") # Append cancellation message
             self.status_bar.showMessage(f"{task_name} キャンセル", 3000)
         except Exception as e:
-             error_msg = f"\n--- {task_name}中に予期せぬエラーが発生しました: {e} ---\n"
-             print(error_msg)
-             self._append_to_output(error_msg) # Append errors
-             self.status_bar.showMessage("予期せぬエラー", 3000)
+            error_msg = f"\n--- {task_name}中に予期せぬエラーが発生しました: {e} ---\n"
+            print(error_msg)
+            self._append_to_output(error_msg) # Append errors
+            self.status_bar.showMessage("予期せぬエラー", 3000)
         finally:
             # Reset status after run finishes or errors out
             self.generation_status = "idle"
@@ -738,9 +740,9 @@ class MainWindow(QMainWindow):
                     return
             # Check if initial prompt is empty after manual prep
             if not final_prompt:
-                 print("Error: Initial infinite generation prompt is empty after manual preparation.")
-                 self._stop_current_generation() # This line was missing in the previous SEARCH block
-                 return # Add the missing return statement here
+                print("Error: Initial infinite generation prompt is empty after manual preparation.")
+                self._stop_current_generation() # This line was missing in the previous SEARCH block
+                return # Add the missing return statement here
         # --- Main Generation Loop ---
         try:
             while self.generation_status == "infinite_running":
@@ -756,15 +758,15 @@ class MainWindow(QMainWindow):
                             continue # Skip this cycle on prep error
                     # Check if prompt is empty after immediate prep
                     if not final_prompt:
-                         print("Warning: Rebuilt prompt for immediate update is empty. Skipping generation cycle.")
-                         await asyncio.sleep(0.5)
-                         continue
+                        print("Warning: Rebuilt prompt for immediate update is empty. Skipping generation cycle.")
+                        await asyncio.sleep(0.5)
+                        continue
 
                 # --- Define Separator Dynamically (Inside the loop for immediate mode) ---
                 # This needs to happen *after* potential parameter updates in immediate mode
                 current_item_text_for_separator = "N/A" # Default
                 if self.current_mode == "idea" and self.idea_item_combo:
-                     current_item_text_for_separator = self.idea_item_combo.currentText()
+                    current_item_text_for_separator = self.idea_item_combo.currentText()
 
                 if self.current_mode == "idea":
                     separator = f"\n--- アイデア生成 ({current_item_text_for_separator}) ({self.output_block_counter}) ---\n"
@@ -783,7 +785,8 @@ class MainWindow(QMainWindow):
                             async for token in self.kobold_client.generate_stream(
                                 final_prompt,
                                 max_length=current_max_length,
-                                stop_sequence=stop_sequence # Use determined stop sequence even for 'all'
+                                stop_sequence=stop_sequence, # Use determined stop sequence even for 'all'
+                                current_mode=self.current_mode # Pass current mode
                             ):
                                 if self.generation_status != "infinite_running":
                                     raise asyncio.CancelledError("Infinite generation stopped during stream.")
@@ -796,7 +799,8 @@ class MainWindow(QMainWindow):
                             async for token in self.kobold_client.generate_stream(
                                 final_prompt,
                                 max_length=current_max_length,
-                                stop_sequence=stop_sequence
+                                stop_sequence=stop_sequence,
+                                current_mode=self.current_mode # Already present, no change needed
                             ):
                                 if self.generation_status != "infinite_running":
                                     raise asyncio.CancelledError("Infinite generation stopped during stream.")
@@ -822,7 +826,8 @@ class MainWindow(QMainWindow):
                             async for token in self.kobold_client.generate_stream(
                                 final_prompt,
                                 max_length=current_max_length,
-                                stop_sequence=stop_sequence
+                                stop_sequence=stop_sequence,
+                                current_mode=self.current_mode # Already present, no change needed
                             ):
                                 if self.generation_status != "infinite_running":
                                     raise asyncio.CancelledError("Infinite generation stopped during stream.")
@@ -836,7 +841,8 @@ class MainWindow(QMainWindow):
                         async for token in self.kobold_client.generate_stream(
                             final_prompt,
                             max_length=current_max_length,
-                            stop_sequence=stop_sequence # Will be None for generate mode
+                            stop_sequence=stop_sequence, # Will be None for generate mode
+                            current_mode=self.current_mode # Pass current mode
                         ):
                             if self.generation_status != "infinite_running":
                                 raise asyncio.CancelledError("Infinite generation stopped during stream.")
@@ -856,23 +862,23 @@ class MainWindow(QMainWindow):
                     self._stop_current_generation() # Stop the infinite loop
                     break # Exit while loop
                 except asyncio.CancelledError:
-                     print("Infinite generation loop cancelled.")
-                     # Stop is handled outside, just break the loop
-                     break
+                    print("Infinite generation loop cancelled.")
+                    # Stop is handled outside, just break the loop
+                    break
                 except Exception as e:
-                     error_msg = f"\n--- 無限生成中に予期せぬエラー: {e} ---\n"
-                     print(error_msg)
-                     self._append_to_output(error_msg)
-                     self.status_bar.showMessage("予期せぬエラー発生、停止します", 5000)
-                     self._stop_current_generation() # Stop the infinite loop
-                     break # Exit while loop
+                    error_msg = f"\n--- 無限生成中に予期せぬエラー: {e} ---\n"
+                    print(error_msg)
+                    self._append_to_output(error_msg)
+                    self.status_bar.showMessage("予期せぬエラー発生、停止します", 5000)
+                    self._stop_current_generation() # Stop the infinite loop
+                    break # Exit while loop
         finally:
             # Ensure status is reset if loop exits unexpectedly (e.g., error not caught above)
             # or if it finishes normally but wasn't stopped via button click.
             # The _stop_current_generation call inside the loop handles cancellation/errors.
             # This ensures cleanup if the loop condition itself becomes false unexpectedly.
             if self.generation_status == "infinite_running":
-                 self._stop_current_generation()
+                self._stop_current_generation()
 
 
     def _append_to_output(self, text: str):
@@ -1046,8 +1052,8 @@ class MainWindow(QMainWindow):
             elif metadata_key == "plot":
                 self.plot_edit.setPlainText(extracted_value)
             else:
-                 print(f"Error: No widget defined for key '{metadata_key}'.")
-                 return
+                print(f"Error: No widget defined for key '{metadata_key}'.")
+                return
 
             self.status_bar.showMessage(f"「{target_name}」を詳細情報に転記しました。", 2000)
 
@@ -1060,10 +1066,10 @@ class MainWindow(QMainWindow):
     def _set_mode_generate(self):
         """Sets the application mode to 'generate'."""
         if self.generation_status != "idle":
-             QMessageBox.warning(self, "生成中", "生成中にモードは変更できません。")
-             self.idea_mode_action.setChecked(self.current_mode == "idea") # Revert check state
-             self.gen_mode_action.setChecked(self.current_mode == "generate")
-             return
+            QMessageBox.warning(self, "生成中", "生成中にモードは変更できません。")
+            self.idea_mode_action.setChecked(self.current_mode == "idea") # Revert check state
+            self.gen_mode_action.setChecked(self.current_mode == "generate")
+            return
         self.current_mode = "generate"
         self.status_bar.showMessage("モード: 小説生成", 2000)
         if self.idea_controls_widget:
@@ -1073,10 +1079,10 @@ class MainWindow(QMainWindow):
     def _set_mode_idea(self):
         """Sets the application mode to 'idea'."""
         if self.generation_status != "idle":
-             QMessageBox.warning(self, "生成中", "生成中にモードは変更できません。")
-             self.idea_mode_action.setChecked(self.current_mode == "idea") # Revert check state
-             self.gen_mode_action.setChecked(self.current_mode == "generate")
-             return
+            QMessageBox.warning(self, "生成中", "生成中にモードは変更できません。")
+            self.idea_mode_action.setChecked(self.current_mode == "idea") # Revert check state
+            self.gen_mode_action.setChecked(self.current_mode == "generate")
+            return
         self.current_mode = "idea"
         self.status_bar.showMessage("モード: アイデア出し", 2000)
         if self.idea_controls_widget:
