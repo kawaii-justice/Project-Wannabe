@@ -1,3 +1,5 @@
+![Generated Image August 28, 2025 - 6_34PM](https://github.com/user-attachments/assets/b34e0a67-bb16-4582-8ff8-7ea7b14da4f0)
+
 # Project Wannabe
 
 **Project Wannabe** は、小説執筆に特化した AI モデル **「[wanabiシリーズ](https://huggingface.co/collections/kawaimasa/wanabi-683144d1bf44a0b922aa1609)」** と、その能力を最大限に引き出すための専用デスクトップアプリケーション（フロントエンド）を統合したプロジェクトです。
