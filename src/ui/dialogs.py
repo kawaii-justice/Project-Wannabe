@@ -238,6 +238,23 @@ class GenerationParamsDialog(QDialog):
         self.transfer_next_eol_radio.toggled.connect(self._update_newline_spinbox_state)
         self._update_newline_spinbox_state() # Set initial state
 
+        # --- Author's Note Display Mode Setting ---
+        authors_note_group = QGroupBox("プロンプトフォーマット")
+        authors_note_layout = QVBoxLayout(authors_note_group)
+
+        self.authors_note_combo = QComboBox()
+        self.authors_note_combo.addItem("レガシー（wanabi_24b_v1やminiなど使用する場合はこちら）", "legacy")
+        self.authors_note_combo.addItem("デフォルト（v3以降のモデルのモデルはこちら）", "default")
+
+        # Load initial setting
+        current_authors_note_mode = self.current_settings.get("authors_note_display_mode", DEFAULT_SETTINGS["authors_note_display_mode"])
+        index_to_set = self.authors_note_combo.findData(current_authors_note_mode)
+        if index_to_set != -1:
+            self.authors_note_combo.setCurrentIndex(index_to_set)
+
+        authors_note_layout.addWidget(self.authors_note_combo)
+        main_layout.addWidget(authors_note_group)
+
         # Dialog buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
@@ -281,6 +298,9 @@ class GenerationParamsDialog(QDialog):
 
         # Save default rating setting
         self.current_settings["default_rating"] = self.rating_combo.currentData()
+
+        # Save Author's Note Display Mode setting
+        self.current_settings["authors_note_display_mode"] = self.authors_note_combo.currentData()
 
         save_settings(self.current_settings)
         super().accept()

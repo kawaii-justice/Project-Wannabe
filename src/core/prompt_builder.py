@@ -351,7 +351,13 @@ def build_prompt(
         # Do not strip main_part to preserve its whitespace
         main_part_block = f"【本文】\n```\n{main_part}\n```" if main_part else None
         reference_block = f"【参考情報】\n```\n{metadata_input_string}\n```" if metadata_input_string else None
-        authors_note_block = f"【オーサーズノート】\n```\n{authors_note.strip()}\n```" if authors_note.strip() else None
+        # Get the author's note display mode from settings
+        settings = load_settings()
+        display_mode = settings.get("authors_note_display_mode", "default")
+        if display_mode == "legacy":
+            authors_note_block = f"【オーサーズノート】\n```\n{authors_note.strip()}\n```" if authors_note.strip() else None
+        else:
+            authors_note_block = f"【この先の展開についての指示・メモ】\n```\n{authors_note.strip()}\n```" if authors_note.strip() else None
 
         input_parts = []
 

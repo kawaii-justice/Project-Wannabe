@@ -270,10 +270,10 @@ class MainWindow(QMainWindow):
         details_layout.addWidget(plot_section)
 
         # Author's Note
-        authors_note_section = CollapsibleSection("オーサーズノート")
+        authors_note_section = CollapsibleSection("次の展開についてのメモ")
         authors_note_layout = QHBoxLayout()
         self.authors_note_edit = QPlainTextEdit()
-        self.authors_note_edit.setPlaceholderText("次のシーンへの指示や要点などを入力...")
+        self.authors_note_edit.setPlaceholderText("この先1000文字程度の展開・要素を記述\n例：\n主人公のエルフの少女が、森の中で迷子のドラゴンと出会うシーン。\n驚きと少しの警戒心、そして好奇心が入り混じった描写を。\n\nまたは単語の羅列も可能です。例：\n主人公エルフ\n迷子ドラゴン登場")
         # Optionally set a fixed height or leave it default
         # self.authors_note_edit.setFixedHeight(100)
         authors_note_layout.addWidget(self.authors_note_edit)
