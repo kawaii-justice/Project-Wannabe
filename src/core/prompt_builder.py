@@ -1,6 +1,7 @@
-from typing import Dict, Optional, Tuple, List # Add List
-from .settings import load_settings, DEFAULT_SETTINGS # Import settings functions
-from .dynamic_prompts import evaluate_dynamic_prompt # Import the new function
+from typing import Dict, Optional, Tuple, List
+from .settings import load_settings, DEFAULT_SETTINGS
+from .dynamic_prompts import evaluate_dynamic_prompt
+from .context_utils import get_true_max_context_length, count_tokens, get_available_context
 
 # --- Instruction Templates (Adjust based on the fine-tuned model's needs) ---
 # These are examples and should match the expected format of your LLM.
@@ -223,11 +224,14 @@ def determine_task_and_instruction(
 def build_prompt(
     current_mode: str,
     main_text: str,
-    ui_data: dict, # Changed from metadata and rating_override
-    cont_prompt_order: str = "reference_first" # Keep this setting
+    ui_data: dict,
+    cont_prompt_order: str = "reference_first"
 ) -> str:
     """
-    Builds the final prompt string based on UI state, settings, and the new format.
+    NOTE:
+    この関数は「与えられたmain_text」を元にプロンプト文字列を構築するのみ。
+    動的圧縮ロジックは build_prompt_with_compression() 側で、
+    main_textを調整しながら本関数を再呼び出しする。
 
     Args:
         current_mode: The current operation mode ('generate' or 'idea').
@@ -323,7 +327,7 @@ def build_prompt(
                     tail = ""
 
             else:
-                # 条件B: 文章が途中で終わっている場合 (既存のロジックを維持)
+                # 条件B: 文章が途中で終わっている場合
                 # Find the last content line for the suffix
                 lines = main_text.splitlines()
                 last_content_line = ""
@@ -336,12 +340,8 @@ def build_prompt(
                 # Split the rest of the text using the new logic (preserves whitespace)
                 main_part, tail = split_main_text(main_text)
 
-            # --- Truncate main_part based on max_context_length setting ---
-            settings = load_settings()
-            max_len = settings.get("max_context_length", DEFAULT_SETTINGS["max_context_length"])
-            if len(main_part) > max_len:
-                main_part = main_part[-max_len:]
-            # --- End of truncation logic ---
+            # main_partの長さ制限は、動的圧縮ロジック側で
+            # main_textを削ってから本関数を再呼び出しすることで行う。
 
         except Exception as e:
             print(f"Error processing main text for CONT task: {e}")
@@ -393,6 +393,172 @@ def build_prompt(
         prompt = f"[INST]{final_instruction}[/INST]{prompt_suffix}"
 
     return prompt
+
+
+# =========================
+# 動的圧縮付きプロンプト構築
+# =========================
+
+async def build_prompt_with_compression(
+    base_url: str,
+    current_mode: str,
+    main_text: str,
+    ui_data: dict,
+    cont_prompt_order: str = "reference_first",
+    compression_mode: Optional[str] = None,
+    max_length_idea: Optional[int] = None,
+    max_length_generate: Optional[int] = None,
+) -> Tuple[str, int, bool, Optional[int], Optional[int]]:
+    """
+    KoboldCppの true_max_context_length / tokencount を用いて、
+    最大コンテキスト長 - 最大出力長 の制約内に収まるように
+    本文を必要に応じて動的に圧縮したうえでプロンプトを構築する。
+
+    戻り値:
+        (prompt, total_tokens, is_overflow, original_body_chars, compressed_body_chars)
+
+        is_overflow:
+            圧縮後も total_tokens が利用可能トークン数を超えている場合 True。
+        original_body_chars / compressed_body_chars:
+            本文の元文字数と、最終的にプロンプトに使われた本文文字数。
+            （品質警告用に呼び出し側で利用）
+    """
+    settings = load_settings()
+
+    # 圧縮モード取得
+    mode = compression_mode or settings.get(
+        "compression_mode",
+        DEFAULT_SETTINGS.get("compression_mode", "token_dynamic")
+    )
+
+    # タスク別 最大出力長
+    if current_mode == "idea":
+        max_out = max_length_idea or settings.get(
+            "max_length_idea",
+            DEFAULT_SETTINGS["max_length_idea"]
+        )
+    else:
+        # generateモード (GEN/CONT含む) は共通設定を使う
+        max_out = max_length_generate or settings.get(
+            "max_length_generate",
+            DEFAULT_SETTINGS["max_length_generate"]
+        )
+
+    # true_max_context_length取得（毎回。キャッシュしない）
+    true_ctx = await get_true_max_context_length(base_url)
+    if true_ctx is None:
+        # フォールバックは context_utils 側で扱うが、
+        # ここでは安全のためDEFAULT_SETTINGS相当を利用しておく
+        true_ctx = DEFAULT_SETTINGS.get("max_main_text_chars", 8192)
+
+    available_ctx = get_available_context(true_ctx, max_out)
+    if available_ctx is None:
+        # 利用可能トークン数が計算不能/非正なら、そのままbuild_promptのみ行う
+        prompt = build_prompt(current_mode, main_text, ui_data, cont_prompt_order)
+        total = await count_tokens(base_url, prompt) or 0
+        return prompt, total
+
+    # 現在のmain_textで一旦プロンプト構築→トークン数計測
+    def _build(mt: str) -> str:
+        return build_prompt(current_mode, mt, ui_data, cont_prompt_order)
+
+    prompt = _build(main_text)
+    total_tokens = await count_tokens(base_url, prompt) or 0
+
+    # 本文長（文字数）を記録
+    original_body_chars = len(main_text)
+
+    # そもそも収まっている or 本文無し or 圧縮無効 の場合
+    if total_tokens <= available_ctx or not main_text.strip() or mode == "none":
+        return prompt, total_tokens, False, (original_body_chars or None), (original_body_chars or None)
+
+    # ここから超過時モード別処理
+
+    # --- char_trim: 最大本文文字数で先頭カット ---
+    if mode == "char_trim":
+        max_chars = settings.get(
+            "max_main_text_chars",
+            DEFAULT_SETTINGS.get("max_main_text_chars", 8000)
+        )
+        if max_chars > 0 and len(main_text) > max_chars:
+            # 末尾側を優先して残す
+            truncated = main_text[-max_chars:]
+            prompt = _build(truncated)
+            total_tokens = await count_tokens(base_url, prompt) or 0
+            if total_tokens <= available_ctx:
+                return prompt, total_tokens, False, original_body_chars, len(truncated)
+
+            # 収まらない場合も、最も削ったこの状態を返しつつ overflow フラグON
+            return prompt, total_tokens, True, original_body_chars, len(truncated)
+
+        # max_chars以下しか本文がなく、なお超過している場合
+        return prompt, total_tokens, True, original_body_chars, len(main_text)
+
+    # --- token_dynamic: トークン数ベース動的圧縮 ---
+    if mode == "token_dynamic":
+        step_chars = max(
+            1,
+            int(settings.get(
+                "token_compression_step_chars",
+                DEFAULT_SETTINGS.get("token_compression_step_chars", 100)
+            ))
+        )
+        offset_chars = int(settings.get(
+            "token_compression_offset_chars",
+            DEFAULT_SETTINGS.get("token_compression_offset_chars", 4000)
+        ))
+
+        # 本文単体のトークン数
+        body_tokens = await count_tokens(base_url, main_text) or 0
+        text_len = max(len(main_text), 1)
+        tokens_per_char = body_tokens / text_len if text_len > 0 else 1.0
+
+        # 「その他部分」のトークン数推定:
+        # total_tokens(初回) - body_tokens を参考値とする
+        other_tokens_est = max(total_tokens - body_tokens, 0)
+
+        # 本文に割り当て可能なトークン数
+        available_for_body = max(available_ctx - other_tokens_est, 0)
+        if available_for_body <= 0:
+            # どうやっても無理な場合（既存promptのままoverflow扱い）
+            return prompt, total_tokens, True, original_body_chars, original_body_chars
+
+        # 推定収納可能文字数
+        est_body_chars = int(available_for_body / max(tokens_per_char, 1e-6))
+
+        # 開始位置: 「できるだけ末尾を残す」ためにオフセット分手前から開始
+        # 例: len - est_body_chars - offset から
+        start_index = max(0, len(main_text) - est_body_chars - offset_chars)
+
+        best_prompt = prompt
+        best_tokens = total_tokens
+        best_body_chars = original_body_chars
+
+        # start_index から step_chars ずつ先頭を削りながら探索
+        cut_index = start_index
+        while cut_index < len(main_text):
+            truncated = main_text[cut_index:]
+            cand_prompt = _build(truncated)
+            cand_tokens = await count_tokens(base_url, cand_prompt) or 0
+            cand_body_chars = len(truncated)
+
+            if cand_tokens <= available_ctx:
+                # 最初に条件を満たしたものを採用
+                return cand_prompt, cand_tokens, False, original_body_chars, cand_body_chars
+
+            # 条件を満たさないが、より少ないトークンのものを控えておく
+            if cand_tokens < best_tokens:
+                best_tokens = cand_tokens
+                best_prompt = cand_prompt
+                best_body_chars = cand_body_chars
+
+            cut_index += step_chars
+
+        # ループしても収まらない場合は、最も短かったものを返す（overflow扱い）
+        return best_prompt, best_tokens, True, original_body_chars, best_body_chars
+
+    # mode == "none" など未知値は、そのまま（既に先頭でnoneチェック済みだが保険）
+    return prompt, total_tokens, (total_tokens > available_ctx), original_body_chars, original_body_chars
 
 # --- Example Usage (Updated for new build_prompt signature) ---
 if __name__ == "__main__":

@@ -55,22 +55,16 @@ class GenerationParamsDialog(QDialog):
         main_layout = QVBoxLayout(self)
         form_layout = QFormLayout()
 
-        # max_length (Mode-specific)
+        # 最大出力長 (モード別)
         self.max_length_idea_spinbox = QSpinBox()
         self.max_length_idea_spinbox.setRange(1, 10000) # Adjust max as needed
         self.max_length_idea_spinbox.setValue(self.current_settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"]))
-        form_layout.addRow("最大長 (アイデア出し):", self.max_length_idea_spinbox)
+        form_layout.addRow("最大出力長 (アイデア出し):", self.max_length_idea_spinbox)
 
         self.max_length_generate_spinbox = QSpinBox()
         self.max_length_generate_spinbox.setRange(1, 10000) # Adjust max as needed
         self.max_length_generate_spinbox.setValue(self.current_settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"]))
-        form_layout.addRow("最大長 (小説生成):", self.max_length_generate_spinbox)
-
-        # max_context_length
-        self.max_context_length_spinbox = QSpinBox()
-        self.max_context_length_spinbox.setRange(1, 32768) # Allow larger values
-        self.max_context_length_spinbox.setValue(self.current_settings.get("max_context_length", DEFAULT_SETTINGS["max_context_length"]))
-        form_layout.addRow("最大本文コンテキスト長 (継続時):", self.max_context_length_spinbox)
+        form_layout.addRow("最大出力長 (小説生成/継続):", self.max_length_generate_spinbox)
 
         # temperature
         self.temp_spinbox = QDoubleSpinBox()
@@ -124,6 +118,38 @@ class GenerationParamsDialog(QDialog):
         # --- End Default Rating Setting ---
 
         main_layout.addLayout(form_layout)
+
+        # 本文圧縮モード設定
+        compression_group = QGroupBox("最大コンテキスト超過時の処理")
+        compression_layout = QVBoxLayout(compression_group)
+
+        self.compression_combo = QComboBox()
+        self.compression_combo.addItem("本文をトークン数に基づき圧縮 (推奨)", "token_dynamic")
+        self.compression_combo.addItem("最大本文文字数にトリム", "char_trim")
+        self.compression_combo.addItem("何もしない (非推奨)", "none")
+        current_mode = self.current_settings.get("compression_mode", DEFAULT_SETTINGS.get("compression_mode", "token_dynamic"))
+        index = self.compression_combo.findData(current_mode)
+        if index != -1:
+            self.compression_combo.setCurrentIndex(index)
+        compression_layout.addWidget(self.compression_combo)
+
+        # 最大本文文字数 (char_trim専用)
+        max_main_text_label = QLabel("最大本文文字数 (char_trim選択時に有効):")
+        self.max_main_text_chars_spinbox = QSpinBox()
+        self.max_main_text_chars_spinbox.setRange(1, 32768)
+        self.max_main_text_chars_spinbox.setValue(self.current_settings.get("max_main_text_chars", DEFAULT_SETTINGS.get("max_main_text_chars", 8000)))
+        compression_layout.addWidget(max_main_text_label)
+        compression_layout.addWidget(self.max_main_text_chars_spinbox)
+
+        # トークン数ベース圧縮ステップ (token_dynamic専用)
+        token_step_label = QLabel("トークン数ベース圧縮: 一度に削る文字数 (大きくすると高速化、小さくすると正確に):")
+        self.token_compression_step_spinbox = QSpinBox()
+        self.token_compression_step_spinbox.setRange(1, 5000)
+        self.token_compression_step_spinbox.setValue(self.current_settings.get("token_compression_step_chars", DEFAULT_SETTINGS.get("token_compression_step_chars", 100)))
+        compression_layout.addWidget(token_step_label)
+        compression_layout.addWidget(self.token_compression_step_spinbox)
+
+        main_layout.addWidget(compression_group)
 
         # Stop Sequences
         stop_seq_label = QLabel("ストップシーケンス (1行に1つ):")
@@ -266,7 +292,6 @@ class GenerationParamsDialog(QDialog):
         # self.current_settings["max_length"] = self.max_length_spinbox.value() # Removed old setting
         self.current_settings["max_length_idea"] = self.max_length_idea_spinbox.value()
         self.current_settings["max_length_generate"] = self.max_length_generate_spinbox.value()
-        self.current_settings["max_context_length"] = self.max_context_length_spinbox.value()
         self.current_settings["temperature"] = self.temp_spinbox.value()
         self.current_settings["min_p"] = self.min_p_spinbox.value()
         self.current_settings["top_p"] = self.top_p_spinbox.value()
@@ -280,6 +305,11 @@ class GenerationParamsDialog(QDialog):
 
         # Save continuation prompt order setting
         self.current_settings["cont_prompt_order"] = self.cont_order_combo.currentData()
+
+        # Save compression settings
+        self.current_settings["compression_mode"] = self.compression_combo.currentData()
+        self.current_settings["max_main_text_chars"] = self.max_main_text_chars_spinbox.value()
+        self.current_settings["token_compression_step_chars"] = self.token_compression_step_spinbox.value()
 
         # Save infinite generation behavior settings
         inf_gen_behavior = self.current_settings.get("infinite_generation_behavior", {})

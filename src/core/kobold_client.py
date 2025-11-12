@@ -3,7 +3,8 @@ import json
 import asyncio
 from typing import AsyncGenerator, Dict, Any, Optional, List
 
-from src.core.settings import load_settings
+from src.core.settings import load_settings, DEFAULT_SETTINGS
+from src.core.prompt_builder import build_prompt_with_compression
 
 class KoboldClientError(Exception):
     """Custom exception for KoboldClient errors."""
@@ -18,10 +19,14 @@ class KoboldClient:
         self.client = httpx.AsyncClient(timeout=None) # Allow long-running streams
         self._current_settings = load_settings() # Load initial settings
 
-    def _get_api_url(self) -> str:
-        """Constructs the API URL from settings."""
+    def _get_api_base_url(self) -> str:
+        """Base URL (host+port) for KoboldCpp."""
         port = self._current_settings.get("kobold_port", 5001)
-        return f"http://127.0.0.1:{port}/api/extra/generate/stream"
+        return f"http://127.0.0.1:{port}"
+
+    def _get_generate_stream_url(self) -> str:
+        """Constructs the streaming generation API URL."""
+        return f"{self._get_api_base_url()}/api/extra/generate/stream"
 
     def reload_settings(self):
         """Reloads settings from the config file."""
@@ -40,6 +45,11 @@ class KoboldClient:
         """
         Sends a prompt to the KoboldCpp streaming API and yields generated tokens.
 
+        重要:
+        - 呼び出し元で build_prompt_with_compression(...) により
+          最大コンテキスト長 - 最大出力長の制約内に収まるプロンプトを構築してから渡す想定。
+        - この関数自身は渡されたpromptをそのまま送信する（追加圧縮は行わない）。
+
         Args:
             prompt: The input prompt string.
             max_length: Optional specific max_length for this generation request.
@@ -52,7 +62,7 @@ class KoboldClient:
         Raises:
             KoboldClientError: If connection fails or API returns an error status.
         """
-        api_url = self._get_api_url()
+        api_url = self._get_generate_stream_url()
         # Combine default settings with overrides, prioritizing the max_length argument
         params_to_send = {
             # "max_length": self._current_settings.get("max_length"), # Removed reading from settings

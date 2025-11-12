@@ -15,10 +15,10 @@ from typing import Dict, Optional, List # Add Optional and List here
 from src.ui.widgets import CollapsibleSection, TagWidget
 from src.ui.dialogs import KoboldConfigDialog, GenerationParamsDialog
 from src.core.kobold_client import KoboldClient, KoboldClientError
-from src.core.prompt_builder import build_prompt
-from src.core.dynamic_prompts import evaluate_dynamic_prompt # Import dynamic prompt evaluator
-from src.core.settings import load_settings, DEFAULT_SETTINGS # Import DEFAULT_SETTINGS
-from src.ui.menu_handler import MenuHandler # Import the new MenuHandler
+from src.core.prompt_builder import build_prompt, build_prompt_with_compression
+from src.core.dynamic_prompts import evaluate_dynamic_prompt
+from src.core.settings import load_settings, DEFAULT_SETTINGS
+from src.ui.menu_handler import MenuHandler
 # Import IdeaProcessor and constants
 from src.core.idea_processor import IdeaProcessor, IDEA_ITEM_ORDER, IDEA_ITEM_ORDER_JA, METADATA_MAP
 
@@ -402,34 +402,105 @@ class MainWindow(QMainWindow):
                 )
 
 
-        # --- Generate Mode Logic (Existing) ---
-        else: # self.current_mode == "generate"
+        # --- Generate Mode Logic (with dynamic compression) ---
+        else:  # self.current_mode == "generate"
             self.generation_status = "single_running"
             self._update_ui_for_generation_start()
 
-            # Get raw main text and evaluate dynamic prompts
+            # 本文とUIデータ取得
             raw_main_text = self.main_text_edit.toPlainText()
             main_text = evaluate_dynamic_prompt(raw_main_text)
+            ui_data = self._get_metadata_from_ui()
 
-            ui_data = self._get_metadata_from_ui() # Get data dict from UI (includes metadata, rating, authors_note)
-
-            # Load settings to get the prompt order
             settings = load_settings()
             cont_order = settings.get("cont_prompt_order", DEFAULT_SETTINGS["cont_prompt_order"])
+            compression_mode = settings.get("compression_mode", DEFAULT_SETTINGS.get("compression_mode", "token_dynamic"))
 
-            # Call build_prompt with the new signature
-            prompt = build_prompt(
-                current_mode=self.current_mode,
-                main_text=main_text,
-                ui_data=ui_data, # Pass the whole ui_data dictionary
-                cont_prompt_order=cont_order
-            )
+            # モード別 最大出力長
+            max_len_generate = settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
 
-            separator = f"\n--- 生成ブロック {self.output_block_counter} ---\n"
-            self._append_to_output(separator)
+            # KoboldCppベースURL
+            base_url = self.kobold_client._get_api_base_url()
 
-            # Pass None for stop_sequence to use settings default in generate mode
-            self.generation_task = asyncio.ensure_future(self._run_single_generation(prompt, stop_sequence=None))
+            # 動的圧縮付きプロンプト構築
+            async def _build_and_run():
+                try:
+                    prompt, total_tokens, is_overflow, original_chars, compressed_chars = await build_prompt_with_compression(
+                        base_url=base_url,
+                        current_mode=self.current_mode,
+                        main_text=main_text,
+                        ui_data=ui_data,
+                        cont_prompt_order=cont_order,
+                        compression_mode=compression_mode,
+                        max_length_generate=max_len_generate,
+                    )
+
+                    # 圧縮しても収まりきらない場合（コンテキスト長超過）の処理
+                    if is_overflow:
+                        QMessageBox.critical(
+                            self,
+                            "コンテキスト長超過により生成できません",
+                            (
+                                "本文と詳細情報を圧縮しましたが、それでもモデルの最大コンテキスト長を超過しているため生成を実行できません。\n\n"
+                                "以下のいずれか、または複数の対応を行ってください。\n"
+                                "・詳細情報を推敲して、必要な内容だけを記載する\n"
+                                "・KoboldCpp の設定から AI のコンテキスト長を増やす\n"
+                                "・最大出力長を減らす\n"
+                                "・（非推奨）設定の「最大コンテキスト超過時の処理」で『何もしない』を選択し、このチェックを無視する"
+                            ),
+                        )
+                        self.generation_status = "idle"
+                        self._update_ui_for_generation_stop()
+                        self.generation_task = None
+                        return
+
+                    # 本文圧縮率＋文字数に基づく品質警告
+                    if original_chars and compressed_chars is not None and original_chars > 0:
+                        ratio = compressed_chars / float(original_chars)
+                        min_ratio = settings.get(
+                            "warn_short_context_min_ratio",
+                            DEFAULT_SETTINGS.get("warn_short_context_min_ratio", 0.5),
+                        )
+                        min_chars = settings.get(
+                            "warn_short_context_min_chars",
+                            DEFAULT_SETTINGS.get("warn_short_context_min_chars", 2500),
+                        )
+                        if ratio < min_ratio and compressed_chars < min_chars:
+                            res = QMessageBox.warning(
+                                self,
+                                "コンテキスト圧縮に関する警告",
+                                (
+                                    "詳細情報がAIのコンテキスト（メモリ）に対して大きすぎます。そのため本文が大きく圧縮されており、"
+                                    "生成品質が低下している可能性があります。このまま続行しますか？\n\n"
+                                    "以下の対応を推奨します。\n"
+                                    "・詳細情報を推敲して、必要な内容だけを記載する\n"
+                                    "・KoboldCppの設定からAIのコンテキスト長を増やす\n"
+                                    "・最大出力長を減らす"
+                                ),
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No,
+                            )
+                            if res == QMessageBox.No:
+                                self.generation_status = "idle"
+                                self._update_ui_for_generation_stop()
+                                self.generation_task = None
+                                return
+
+                    separator = f"\n--- 生成ブロック {self.output_block_counter} ---\n"
+                    self._append_to_output(separator)
+
+                    # 実際の生成実行
+                    await self._run_single_generation(prompt, stop_sequence=None)
+
+                except KoboldClientError as e:
+                    self._append_to_output(f"\n--- 単発生成エラー: {e} ---\n")
+                    self.status_bar.showMessage("単発生成 エラー", 3000)
+                except Exception as e:
+                    self._append_to_output(f"\n--- 単発生成中に予期せぬエラー: {e} ---\n")
+                    self.status_bar.showMessage("単発生成 予期せぬエラー", 3000)
+
+            # 非同期タスクとして実行
+            self.generation_task = asyncio.ensure_future(_build_and_run())
 
     @Slot()
     def _toggle_infinite_generation(self):
@@ -699,34 +770,102 @@ class MainWindow(QMainWindow):
                 return False # Preparation failed
 
         # --- Helper function to prepare Generate mode parameters ---
-        def prepare_generate_params():
+        async def prepare_generate_params():
+            """
+            無限生成用のGenerateモードプロンプトを動的圧縮込みで構築する。
+            is_overflow時はエラー表示用に区別される。
+            """
             nonlocal final_prompt, stop_sequence, current_max_length
             try:
                 raw_main_text = self.main_text_edit.toPlainText()
                 main_text = evaluate_dynamic_prompt(raw_main_text)
                 ui_data = self._get_metadata_from_ui()
-                # Load settings for prompt order
-                current_settings = load_settings() # Reload settings if needed
-                cont_order = current_settings.get("cont_prompt_order", DEFAULT_SETTINGS["cont_prompt_order"])
 
-                final_prompt = build_prompt(
+                current_settings = load_settings()
+                cont_order = current_settings.get("cont_prompt_order", DEFAULT_SETTINGS["cont_prompt_order"])
+                compression_mode = current_settings.get("compression_mode", DEFAULT_SETTINGS.get("compression_mode", "token_dynamic"))
+                max_len_generate = current_settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
+
+                base_url = self.kobold_client._get_api_base_url()
+
+                # 動的圧縮付きプロンプト構築
+                prompt, total_tokens, is_overflow, original_chars, compressed_chars = await build_prompt_with_compression(
+                    base_url=base_url,
                     current_mode="generate",
                     main_text=main_text,
                     ui_data=ui_data,
-                    cont_prompt_order=cont_order
+                    cont_prompt_order=cont_order,
+                    compression_mode=compression_mode,
+                    max_length_generate=max_len_generate,
                 )
-                # Use default stop sequence from KoboldClient/settings for generate mode
-                stop_sequence = None
-                # Get Generate max length
-                current_max_length = current_settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
 
-                return True # Preparation successful
+                if is_overflow:
+                    # 圧縮しても超過 → 無限生成を停止
+                    QTimer.singleShot(0, lambda: QMessageBox.critical(
+                        self,
+                        "コンテキスト長超過により無限生成を停止しました",
+                        (
+                            "本文と詳細情報を圧縮しましたが、それでもモデルの最大コンテキスト長を超過しているため"
+                            "無限生成を停止しました。\n\n"
+                            "以下のいずれか、または複数の対応を行ってください。\n"
+                            "・詳細情報を推敲して、必要な内容だけを記載する\n"
+                            "・KoboldCpp の設定から AI のコンテキスト長を増やす\n"
+                            "・最大出力長を減らす\n"
+                            "・（非推奨）設定の「最大コンテキスト超過時の処理」で『何もしない』を選択し、このチェックを無視する"
+                        ),
+                    ))
+                    # 無限生成を停止
+                    self._append_to_output("\n--- コンテキスト長超過により無限生成を停止しました ---\n")
+                    self.status_bar.showMessage("コンテキスト長超過により無限生成を停止しました", 5000)
+                    # ループを抜けるためのフラグを設定
+                    if self.generation_status == "infinite_running":
+                        self.generation_status = "idle"
+                        self._update_ui_for_generation_stop()
+                    return False
+
+                # 短すぎ警告（無限生成: 最初の1回のみ）
+                if (
+                    original_chars
+                    and compressed_chars is not None
+                    and original_chars > 0
+                    and not self.infinite_warning_shown
+                ):
+                    ratio = compressed_chars / float(original_chars)
+                    min_ratio = current_settings.get(
+                        "warn_short_context_min_ratio",
+                        DEFAULT_SETTINGS.get("warn_short_context_min_ratio", 0.5),
+                    )
+                    min_chars = current_settings.get(
+                        "warn_short_context_min_chars",
+                        DEFAULT_SETTINGS.get("warn_short_context_min_chars", 2500),
+                    )
+                    if ratio < min_ratio and compressed_chars < min_chars:
+                        def _show_warn():
+                            QMessageBox.warning(
+                                self,
+                                "コンテキスト圧縮に関する警告",
+                                (
+                                    "詳細情報がAIのコンテキスト（メモリ）に対して大きすぎます。そのため本文が大きく圧縮されており、"
+                                    "生成品質が低下している可能性があります。\n\n"
+                                    "以下の対応を推奨します。\n"
+                                    "・詳細情報を推敲して、必要な内容だけを記載する\n"
+                                    "・KoboldCppの設定からAIのコンテキスト長を増やす\n"
+                                    "・最大出力長を減らす"
+                                ),
+                            )
+                        QTimer.singleShot(0, _show_warn)
+                        self.infinite_warning_shown = True
+
+                final_prompt = prompt
+                stop_sequence = None
+                current_max_length = max_len_generate
+                return True
 
             except Exception as e:
                 print(f"Error preparing Generate params: {e}")
                 error_msg = f"\n--- 無限生成 (Generate準備) エラー: {e} ---\n"
-                self._append_to_output(error_msg) # Append error to output
-                return False # Preparation failed
+                self._append_to_output(error_msg)
+                return False
 
         # --- Initial preparation if behavior is 'manual' ---
         if update_behavior == "manual":
@@ -735,7 +874,7 @@ class MainWindow(QMainWindow):
                     self._stop_current_generation()
                     return
             else: # generate mode
-                if not prepare_generate_params():
+                if not await prepare_generate_params():
                     self._stop_current_generation()
                     return
             # Check if initial prompt is empty after manual prep
@@ -753,7 +892,7 @@ class MainWindow(QMainWindow):
                             await asyncio.sleep(0.5) # Wait before retrying or stopping
                             continue # Skip this cycle on prep error
                     else: # generate mode
-                        if not prepare_generate_params():
+                        if not await prepare_generate_params():
                             await asyncio.sleep(0.5)
                             continue # Skip this cycle on prep error
                     # Check if prompt is empty after immediate prep

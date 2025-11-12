@@ -21,9 +21,32 @@ DEFAULT_SETTINGS = {
     "transfer_to_main_mode": "cursor", # "cursor", "next_line_always", "next_line_eol"
     "transfer_newlines_before": 0, # Number of empty lines to insert before transfer in next_line modes
     "cont_prompt_order": "reference_first", # "text_first" or "reference_first" (Default: reference first)
-    "max_context_length": 8192, # Max context length for the main text part in characters
     "default_rating": "general", # Add default rating setting: "general" or "r18"
-    "authors_note_display_mode": "default" # "legacy" or "default" (Default: default)
+    "authors_note_display_mode": "default", # "legacy" or "default" (Default: default)
+
+    # 本文圧縮/コンテキスト管理関連設定
+    # 圧縮モード:
+    # - "token_dynamic": KoboldCppのtrue_max_context_lengthとtokencountを用いて、
+    #    プロンプト全体トークン数が (max_context - 最大出力長) を超えないように本文先頭を動的にカット（推奨）
+    # - "char_trim": 最大本文文字数(max_main_text_chars)を超える分を先頭カット（従来方式）
+    # - "none": 超過時も何もしない（非推奨、警告のみ）
+    "compression_mode": "token_dynamic",
+
+    # char_trimモードで使用する最大本文文字数（末尾側を優先して残す）
+    "max_main_text_chars": 8000,
+
+    # token_dynamicモードで使用する、本文先頭カットのステップ幅（文字数）
+    "token_compression_step_chars": 100,
+
+    # token_dynamicモードで使用する、推定収納可能文字数に対して余裕を見て飛ばすオフセット（文字数）
+    # 例: 推定OK長 + 4000文字 付近から削り始めることで、できるだけ多く本文を残す
+    "token_compression_offset_chars": 4000,
+
+    # 圧縮後の本文に対する警告条件:
+    # - 元本文長に対する圧縮率 (compressed_len / original_len) がこの値未満
+    # - かつ 圧縮後本文文字数が warn_short_context_min_chars 未満
+    "warn_short_context_min_ratio": 0.5,
+    "warn_short_context_min_chars": 2500
 }
 
 def get_config_path() -> str:
