@@ -21,6 +21,7 @@ from src.core.settings import load_settings, DEFAULT_SETTINGS
 from src.ui.menu_handler import MenuHandler
 # Import IdeaProcessor and constants
 from src.core.idea_processor import IdeaProcessor, IDEA_ITEM_ORDER, IDEA_ITEM_ORDER_JA, METADATA_MAP
+from src.core.context_utils import count_tokens, get_available_context, get_true_max_context_length # Import for token counting
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -45,6 +46,14 @@ class MainWindow(QMainWindow):
         self.idea_item_combo = None
         self.idea_fast_mode_check = None
         self.infinite_warning_shown = False # Flag for infinite gen warning
+
+        # Token tracking variables
+        self.main_text_tokens = 0
+        self.prompt_tokens = 0
+        self.available_context_tokens = 0
+        self.token_update_timer = QTimer()
+        self.token_update_timer.timeout.connect(self._on_token_timer_timeout)
+        self.token_update_timer.start(500)  # Update every 500ms
 
         # Create UI elements
         self._create_toolbar() # Create toolbar first
@@ -87,6 +96,10 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("準備完了") # Changed to Japanese
+        
+        # Create permanent widget for token display
+        self.token_label = QLabel("本文文字数0文字(0トークン) | 全プロンプト: 0 / 0トークン")
+        self.status_bar.addPermanentWidget(self.token_label)
 
     def _create_central_widget(self):
         central_splitter = QSplitter(Qt.Horizontal)
@@ -425,6 +438,9 @@ class MainWindow(QMainWindow):
             # 動的圧縮付きプロンプト構築
             async def _build_and_run():
                 try:
+                    # 圧縮開始前にステータス表示
+                    QTimer.singleShot(0, lambda: self.status_bar.showMessage("本文圧縮中..."))
+                    
                     prompt, total_tokens, is_overflow, original_chars, compressed_chars = await build_prompt_with_compression(
                         base_url=base_url,
                         current_mode=self.current_mode,
@@ -434,6 +450,9 @@ class MainWindow(QMainWindow):
                         compression_mode=compression_mode,
                         max_length_generate=max_len_generate,
                     )
+                    
+                    # 圧縮後、元の生成中ステータスに戻す
+                    QTimer.singleShot(0, lambda: self.status_bar.showMessage("単発生成中..."))
 
                     # 圧縮しても収まりきらない場合（コンテキスト長超過）の処理
                     if is_overflow:
@@ -788,6 +807,9 @@ class MainWindow(QMainWindow):
 
                 base_url = self.kobold_client._get_api_base_url()
 
+                # 圧縮開始前にステータス表示
+                QTimer.singleShot(0, lambda: self.status_bar.showMessage("本文圧縮中..."))
+                
                 # 動的圧縮付きプロンプト構築
                 prompt, total_tokens, is_overflow, original_chars, compressed_chars = await build_prompt_with_compression(
                     base_url=base_url,
@@ -798,6 +820,9 @@ class MainWindow(QMainWindow):
                     compression_mode=compression_mode,
                     max_length_generate=max_len_generate,
                 )
+                
+                # 圧縮後、元の無限生成中ステータスに戻す
+                QTimer.singleShot(0, lambda: self.status_bar.showMessage("無限生成中 (F5で停止)..."))
 
                 if is_overflow:
                     # 圧縮しても超過 → 無限生成を停止
@@ -1243,6 +1268,78 @@ class MainWindow(QMainWindow):
             self.idea_fast_mode_check.setChecked(False) # Uncheck when disabled
         else:
             self.idea_fast_mode_check.setEnabled(True)
+
+    @Slot()
+    def _on_token_timer_timeout(self):
+        """Handles token update timer timeout."""
+        # Use asyncio.ensure_future to run async method without blocking
+        asyncio.ensure_future(self._update_token_display())
+
+    async def _update_token_display(self):
+        """Updates the token display in the status bar."""
+        # Get current main text
+        main_text = self.main_text_edit.toPlainText()
+        main_text_chars = len(main_text)
+        
+        # Skip if no text
+        if main_text_chars == 0:
+            self.token_label.setText("本文文字数0文字(0トークン) | 全プロンプト: 0 / 0トークン")
+            return
+            
+        # Calculate main text tokens (approximate for now, can be improved with actual API call)
+        # Rough approximation: 1 token ≈ 0.75 characters for Japanese text
+        main_text_tokens = int(main_text_chars * 0.75)
+        
+        # Build current prompt to get total tokens
+        try:
+            ui_data = self._get_metadata_from_ui()
+            settings = load_settings()
+            cont_order = settings.get("cont_prompt_order", DEFAULT_SETTINGS["cont_prompt_order"])
+            
+            # Build prompt without compression for token counting
+            prompt = build_prompt(
+                current_mode=self.current_mode,
+                main_text=main_text,
+                ui_data=ui_data,
+                cont_prompt_order=cont_order
+            )
+            
+            # Get max output length based on mode
+            if self.current_mode == "idea":
+                max_output = settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
+            else:
+                max_output = settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
+            
+            # Get available context (max_context - max_output)
+            base_url = self.kobold_client._get_api_base_url()
+            
+            # Use direct async calls instead of run_until_complete
+            max_context = await get_true_max_context_length(base_url)
+            if max_context is None:
+                max_context = 20000  # Fallback value
+                
+            available_context = max_context - max_output
+            
+            # Count tokens in prompt
+            prompt_tokens = await count_tokens(base_url, prompt)
+            if prompt_tokens is None:
+                prompt_tokens = len(prompt) // 4  # Fallback approximation
+                
+            # Check if compression is needed
+            compression_needed = prompt_tokens > available_context
+            
+            # Format display
+            if compression_needed:
+                status_text = f"本文文字数{main_text_chars:,}文字({main_text_tokens:,}トークン) | 全プロンプト: {prompt_tokens:,} / {available_context:,}トークン (要圧縮)"
+            else:
+                status_text = f"本文文字数{main_text_chars:,}文字({main_text_tokens:,}トークン) | 全プロンプト: {prompt_tokens:,} / {available_context:,}トークン"
+                
+            self.token_label.setText(status_text)
+            
+        except Exception as e:
+            # Fallback display on error
+            self.token_label.setText(f"本文文字数{main_text_chars:,}文字(計算中...) | 全プロンプト: 計算中 / 0トークン")
+            print(f"Token calculation error: {e}")
 
 
 if __name__ == "__main__":
