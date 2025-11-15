@@ -299,6 +299,18 @@ class MenuHandler:
     def _create_edit_menu(self, menu_bar: QMenuBar):
         edit_menu = menu_bar.addMenu("編集(&E)")
 
+        # 検索機能の初期化
+        if not hasattr(self, 'search_handler'):
+            from src.ui.search_handler import SearchHandler
+            self.search_handler = SearchHandler(self.main_window)
+
+        # 検索アクションを追加
+        search_actions = self.search_handler.create_search_actions()
+        for action in search_actions:
+            edit_menu.addAction(action)
+            
+        edit_menu.addSeparator()
+
         undo_action = QAction("元に戻す", self.main_window)
         undo_action.setShortcut(QKeySequence.Undo)
         edit_menu.addAction(undo_action)
