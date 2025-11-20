@@ -178,8 +178,14 @@ class AutocompleteManager(QObject):
                 if not self.is_enabled:
                     print("[AutocompleteManager] Skipping ghost text display - autocomplete disabled during generation")
                     return
+                if main_window and hasattr(main_window, 'generation_status'):
+                    if main_window.generation_status != "idle":
+                        print(f"[AutocompleteManager] Skipping display - Main generation status is '{main_window.generation_status}'")
+                        return
                 print(f"[Autocomplete Suggestion]: {generated_text}")
                 self.show_ghost_text(generated_text)
+
+                
             else:
                 print("[AutocompleteManager] Generation result was empty")
                 
