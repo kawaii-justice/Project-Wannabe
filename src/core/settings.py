@@ -46,7 +46,12 @@ DEFAULT_SETTINGS = {
     # - 元本文長に対する圧縮率 (compressed_len / original_len) がこの値未満
     # - かつ 圧縮後本文文字数が warn_short_context_min_chars 未満
     "warn_short_context_min_ratio": 0.5,
-    "warn_short_context_min_chars": 2500
+    "warn_short_context_min_chars": 2500,
+
+    # オートコンプリート設定
+    "max_length_autocomplete": 64,  # オートコンプリート用の最大出力長
+    "autocomplete_debounce_ms": 1000,  # デバウンス時間（ミリ秒）
+    "autocomplete_trigger_mode": "auto"  # トリガーモード: "auto" または "manual"
 }
 
 def get_config_path() -> str:

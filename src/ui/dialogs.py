@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinB
                                QSpacerItem, QSizePolicy)
 from PySide6.QtCore import Slot
 from src.core.settings import load_settings, save_settings, DEFAULT_SETTINGS
+from src.ui.widgets import CollapsibleSection
 
 class KoboldConfigDialog(QDialog):
     """Dialog for configuring KoboldCpp connection settings."""
@@ -119,8 +120,9 @@ class GenerationParamsDialog(QDialog):
 
         main_layout.addLayout(form_layout)
 
-        # 本文圧縮モード設定
-        compression_group = QGroupBox("最大コンテキスト超過時の処理")
+        # 本文圧縮モード設定 - CollapsibleSectionで囲む
+        compression_section = CollapsibleSection("最大コンテキスト超過時の処理")
+        compression_group = QGroupBox()
         compression_layout = QVBoxLayout(compression_group)
 
         self.compression_combo = QComboBox()
@@ -149,7 +151,8 @@ class GenerationParamsDialog(QDialog):
         compression_layout.addWidget(token_step_label)
         compression_layout.addWidget(self.token_compression_step_spinbox)
 
-        main_layout.addWidget(compression_group)
+        compression_section.addWidget(compression_group)
+        main_layout.addWidget(compression_section)
 
         # Stop Sequences
         stop_seq_label = QLabel("ストップシーケンス (1行に1つ):")
@@ -162,7 +165,8 @@ class GenerationParamsDialog(QDialog):
         main_layout.addWidget(self.stop_seq_edit)
 
         # --- Continuation Prompt Order Setting ---
-        cont_order_group = QGroupBox("継続タスクのプロンプト順序")
+        cont_order_section = CollapsibleSection("継続タスクのプロンプト順序")
+        cont_order_group = QGroupBox()
         cont_order_layout = QVBoxLayout(cont_order_group)
 
         self.cont_order_combo = QComboBox()
@@ -182,12 +186,14 @@ class GenerationParamsDialog(QDialog):
         cont_order_desc_label.setWordWrap(True) # Allow text wrapping
         cont_order_layout.addWidget(cont_order_desc_label)
 
-        main_layout.addWidget(cont_order_group)
+        cont_order_section.addWidget(cont_order_group)
+        main_layout.addWidget(cont_order_section)
         # --- End Continuation Prompt Order Setting ---
 
 
         # --- Infinite Generation Behavior Settings ---
-        inf_gen_group = QGroupBox("無限生成中のプロンプト更新")
+        inf_gen_section = CollapsibleSection("無限生成中のプロンプト更新")
+        inf_gen_group = QGroupBox()
         inf_gen_layout = QVBoxLayout(inf_gen_group)
 
         # Idea Mode Behavior
@@ -208,7 +214,8 @@ class GenerationParamsDialog(QDialog):
         gen_layout.addWidget(self.gen_manual_radio)
         inf_gen_layout.addWidget(gen_group)
 
-        main_layout.addWidget(inf_gen_group)
+        inf_gen_section.addWidget(inf_gen_group)
+        main_layout.addWidget(inf_gen_section)
 
         # Load initial state for radio buttons
         inf_gen_behavior = self.current_settings.get("infinite_generation_behavior", DEFAULT_SETTINGS["infinite_generation_behavior"])
@@ -223,7 +230,8 @@ class GenerationParamsDialog(QDialog):
             self.gen_manual_radio.setChecked(True)
 
         # --- Transfer to Main Text Settings ---
-        transfer_group = QGroupBox("出力から本文への転記設定")
+        transfer_section = CollapsibleSection("出力から本文への転記設定")
+        transfer_group = QGroupBox()
         transfer_layout = QVBoxLayout(transfer_group)
 
         # Transfer Mode Radio Buttons
@@ -247,7 +255,8 @@ class GenerationParamsDialog(QDialog):
         newline_layout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)) # Add spacer
         transfer_layout.addLayout(newline_layout)
 
-        main_layout.addWidget(transfer_group)
+        transfer_section.addWidget(transfer_group)
+        main_layout.addWidget(transfer_section)
 
         # Load initial state for transfer settings
         transfer_mode = self.current_settings.get("transfer_to_main_mode", DEFAULT_SETTINGS["transfer_to_main_mode"])
@@ -280,6 +289,12 @@ class GenerationParamsDialog(QDialog):
 
         authors_note_layout.addWidget(self.authors_note_combo)
         main_layout.addWidget(authors_note_group)
+
+        # 折りたたみセクションを初期状態で閉じる
+        compression_section.toggle_button.setChecked(False)
+        cont_order_section.toggle_button.setChecked(False)
+        inf_gen_section.toggle_button.setChecked(False)
+        transfer_section.toggle_button.setChecked(False)
 
         # Dialog buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)

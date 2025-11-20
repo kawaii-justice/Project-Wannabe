@@ -195,7 +195,7 @@ def determine_task_and_instruction(
     # --- Determine Task Type ---
     task_type = "GEN_ZERO" # Default
 
-    if current_mode == "generate":
+    if current_mode == "generate" or current_mode == "autocomplete":
         if not has_main_text:
             task_type = "GEN_INFO" if has_any_metadata_for_gen_cont else "GEN_ZERO"
         else: # has_main_text
@@ -234,7 +234,7 @@ def build_prompt(
     main_textを調整しながら本関数を再呼び出しする。
 
     Args:
-        current_mode: The current operation mode ('generate' or 'idea').
+        current_mode: The current operation mode ('generate', 'idea', or 'autocomplete').
         main_text: The main text input from the UI.
         ui_data: Dictionary containing metadata, rating, and authors_note from the UI.
         cont_prompt_order: The desired order for continuation prompts ('text_first' or 'reference_first').
@@ -291,6 +291,8 @@ def build_prompt(
         # Whitespace and newlines are preserved.
         internal_input = metadata_input_string
         if main_text:
+            # GENタスクでは、オートコンプリートモードでも通常のgenerateモードと同様に
+            # main_text全体をprompt_suffixとして設定する（【本文】ブロックは作成しない）
             prompt_suffix = main_text
     elif task_type.startswith("IDEA"):
         # IDEA tasks: internal_input is metadata_input_string. No prompt_suffix from main_text.
@@ -299,46 +301,69 @@ def build_prompt(
     elif task_type.startswith("CONT"):
         # CONT tasks: Preserve whitespace. Split text into main_part, tail, and suffix.
         try:
-            if is_sentence_complete(main_text):
-                # 条件A: 文章が完結している場合
-                prompt_suffix = "" # 空文字列に設定
-
-                lines = main_text.splitlines()
-                # 最後のコンテンツ行のインデックスを見つける
-                last_content_line_index = -1
-                for i in range(len(lines) - 1, -1, -1):
-                    if lines[i].strip():
-                        last_content_line_index = i
-                        break
-                
-                if last_content_line_index != -1:
-                    # 最後のコンテンツ行を含めて、その行で終わる合計3行分をtailとして切り出す
-                    tail_end_index = last_content_line_index
-                    tail_start_index = max(0, tail_end_index - 2) # 0未満にならないように調整
-
-                    tail_lines = lines[tail_start_index : tail_end_index + 1]
-                    tail = "\n".join(tail_lines)
-
-                    main_part_lines = lines[:tail_start_index]
-                    main_part = "\n".join(main_part_lines)
+            if current_mode == "autocomplete":
+                # オートコンプリートモード：is_sentence_completeの判定をスキップし、現在の行を常にsuffixとして扱う
+                # 最後の改行文字より後ろのテキストをsuffixとする
+                last_newline_index = main_text.rfind('\n')
+                if last_newline_index != -1:
+                    prompt_suffix = main_text[last_newline_index + 1:]
+                    # suffixより前のテキストをコンテキストとして扱う
+                    context_text = main_text[:last_newline_index + 1]
+                    # split_main_textを使わず、オートコンプリート専用の分割ロジックを使用
+                    # context_textを行単位で分割し、末尾3行をtail、残りをmain_partとする
+                    lines = context_text.splitlines(keepends=True)  # 改行を保持して分割
+                    if len(lines) > 3:
+                        main_part = "".join(lines[:-3])
+                        tail = "".join(lines[-3:])
+                    else:
+                        main_part = ""
+                        tail = "".join(lines)
                 else:
-                    # main_textが空行のみの場合など、コンテンツ行がない場合
-                    main_part = ""
-                    tail = ""
-
+                    # 改行がない場合、全体をsuffixとし、コンテキストは空にする
+                    prompt_suffix = main_text
+                    main_part, tail = "", ""
             else:
-                # 条件B: 文章が途中で終わっている場合
-                # Find the last content line for the suffix
-                lines = main_text.splitlines()
-                last_content_line = ""
-                for line in reversed(lines):
-                    if line.strip():
-                        last_content_line = line
-                        break
-                prompt_suffix = last_content_line.strip()
+                # 通常のgenerateモード
+                if is_sentence_complete(main_text):
+                    # 条件A: 文章が完結している場合
+                    prompt_suffix = "" # 空文字列に設定
 
-                # Split the rest of the text using the new logic (preserves whitespace)
-                main_part, tail = split_main_text(main_text)
+                    lines = main_text.splitlines()
+                    # 最後のコンテンツ行のインデックスを見つける
+                    last_content_line_index = -1
+                    for i in range(len(lines) - 1, -1, -1):
+                        if lines[i].strip():
+                            last_content_line_index = i
+                            break
+                    
+                    if last_content_line_index != -1:
+                        # 最後のコンテンツ行を含めて、その行で終わる合計3行分をtailとして切り出す
+                        tail_end_index = last_content_line_index
+                        tail_start_index = max(0, tail_end_index - 2) # 0未満にならないように調整
+
+                        tail_lines = lines[tail_start_index : tail_end_index + 1]
+                        tail = "\n".join(tail_lines)
+
+                        main_part_lines = lines[:tail_start_index]
+                        main_part = "\n".join(main_part_lines)
+                    else:
+                        # main_textが空行のみの場合など、コンテンツ行がない場合
+                        main_part = ""
+                        tail = ""
+
+                else:
+                    # 条件B: 文章が途中で終わっている場合
+                    # Find the last content line for the suffix
+                    lines = main_text.splitlines()
+                    last_content_line = ""
+                    for line in reversed(lines):
+                        if line.strip():
+                            last_content_line = line
+                            break
+                    prompt_suffix = last_content_line.strip()
+
+                    # Split the rest of the text using the new logic (preserves whitespace)
+                    main_part, tail = split_main_text(main_text)
 
             # main_partの長さ制限は、動的圧縮ロジック側で
             # main_textを削ってから本関数を再呼び出しすることで行う。

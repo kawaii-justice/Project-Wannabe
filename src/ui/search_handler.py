@@ -71,6 +71,17 @@ class SearchHandler(QObject):
         
     def show_search_dialog(self):
         """検索ダイアログを表示"""
+        # オートコンプリートが有効な場合は強制的に無効化（生成中の割り込み防止）
+        if (hasattr(self.main_window, 'autocomplete_checkbox') and
+            self.main_window.autocomplete_checkbox.isChecked()):
+            print("[SearchHandler] Disabling autocomplete for safe search mode")
+            self.main_window.autocomplete_checkbox.setChecked(False)
+            # set_enabled(False) はtoggledシグナル経由で呼ばれるため、ここではチェック解除のみ
+            
+        # ゴーストテキストが表示されている場合はクリア（オートコンプリートとの競合防止）
+        if hasattr(self.main_window, 'autocomplete_manager') and self.main_window.autocomplete_manager:
+            self.main_window.autocomplete_manager.clear_ghost_text()
+            
         if not self.search_dialog:
             self.search_dialog = SearchDialog(self.main_window)
             # シグナルの接続

@@ -660,8 +660,10 @@ class MenuHandler:
         if hasattr(self.main_window, '_open_kobold_config_dialog') and hasattr(self.main_window, '_open_gen_params_dialog'):
             kobold_config_action = settings_menu.addAction("KoboldCpp 設定...")
             gen_params_action = settings_menu.addAction("生成パラメータ設定...")
+            autocomplete_settings_action = settings_menu.addAction("設定: リアルタイム提案（ベータ）...")
             kobold_config_action.triggered.connect(self.main_window._open_kobold_config_dialog)
             gen_params_action.triggered.connect(self.main_window._open_gen_params_dialog)
+            autocomplete_settings_action.triggered.connect(self._open_autocomplete_settings_dialog)
         else:
              placeholder = settings_menu.addAction("(設定機能未接続)")
              placeholder.setEnabled(False)
@@ -673,6 +675,19 @@ class MenuHandler:
         about_action = QAction("バージョン情報", self.main_window)
         about_action.triggered.connect(self._show_about_dialog)
         help_menu.addAction(about_action)
+
+    @Slot()
+    def _open_autocomplete_settings_dialog(self):
+        """Opens the autocomplete settings dialog."""
+        from src.ui.autocomplete_settings_dialog import AutocompleteSettingsDialog
+        
+        if AutocompleteSettingsDialog.show_dialog(self.main_window):
+            # 設定が変更された場合、AutocompleteManagerに再読み込みを通知
+            if hasattr(self.main_window, 'autocomplete_manager'):
+                self.main_window.autocomplete_manager.reload_settings()
+                self.main_window.status_bar.showMessage("リアルタイム提案（ベータ）の設定を更新しました。", 3000)
+            else:
+                print("Warning: autocomplete_manager not found in main_window")
 
     @Slot()
     def _show_about_dialog(self):

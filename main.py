@@ -6,9 +6,9 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QMenuBar, QStatusBar,
                                QSplitter, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout,
                                QTabWidget, QScrollArea, QLineEdit, QPushButton, QMessageBox,
                                QPlainTextEdit, QToolBar, QDialog, QLineEdit, QLabel, QComboBox, # Add QLabel, QComboBox
-                               QCheckBox, QPlainTextEdit) # Ensure QPlainTextEdit is imported, Add QCheckBox
-from PySide6.QtCore import Qt, Slot, QTimer # Add QTimer
-from PySide6.QtGui import QTextCursor, QAction, QActionGroup, QFont # Add QFont
+                               QCheckBox, QPlainTextEdit, QSizePolicy) # Ensure QPlainTextEdit is imported, Add QCheckBox, QSizePolicy
+from PySide6.QtCore import Qt, Slot, QTimer, QEvent # Add QEvent
+from PySide6.QtGui import QTextCursor, QAction, QActionGroup, QFont, QKeyEvent # Add QKeyEvent
 from typing import Dict, Optional, List # Add Optional and List here
 
 # Correctly import custom widgets and other modules
@@ -22,6 +22,9 @@ from src.ui.menu_handler import MenuHandler
 # Import IdeaProcessor and constants
 from src.core.idea_processor import IdeaProcessor, IDEA_ITEM_ORDER, IDEA_ITEM_ORDER_JA, METADATA_MAP
 from src.core.context_utils import count_tokens, get_available_context, get_true_max_context_length # Import for token counting
+
+# Import AutocompleteManager
+from src.core.autocomplete_manager import AutocompleteManager
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -61,6 +64,15 @@ class MainWindow(QMainWindow):
         self._create_central_widget() # Create central widget before menu bar needs it
         self._create_menu_bar() # Create menu bar using the handler
 
+        # AutocompleteManagerの初期化（main_text_edit作成後）
+        self.autocomplete_manager = AutocompleteManager(self.main_text_edit, self.kobold_client)
+        
+        # イベントフィルターをインストール
+        self.main_text_edit.installEventFilter(self)
+        
+        # 初期状態のショートカット表示を更新
+        self._update_shortcut_display()
+
         # Apply initial theme and font from settings via MenuHandler
         # These might be called within MenuHandler's creation logic already
         # self.menu_handler._apply_initial_font() # Ensure initial font is applied
@@ -91,6 +103,24 @@ class MainWindow(QMainWindow):
         self.idea_mode_action.triggered.connect(self._set_mode_idea)
         toolbar.addAction(self.idea_mode_action)
         mode_group.addAction(self.idea_mode_action)
+
+        toolbar.addSeparator()
+
+        # 執筆支援モード（オートコンプリート）チェックボックス
+        self.autocomplete_checkbox = QCheckBox("リアルタイムで続きを提案（ベータ）")
+        self.autocomplete_checkbox.setChecked(False)  # 初期状態はOFF
+        self.autocomplete_checkbox.setFocusPolicy(Qt.NoFocus)  # フォーカスを無効化してショートカット暴発を防止
+        self.autocomplete_checkbox.toggled.connect(self._toggle_autocomplete_mode)
+        toolbar.addWidget(self.autocomplete_checkbox)
+        
+        # スペーサーを追加して右端にショートカット説明を配置
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
+        
+        # ショートカットキー説明ラベル
+        self.shortcut_label = QLabel("単発生成: Ctrl+G | 無限生成: F5")
+        toolbar.addWidget(self.shortcut_label)
 
     def _create_status_bar(self):
         self.status_bar = QStatusBar()
@@ -328,6 +358,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             self.status_bar.showMessage("KoboldCpp 設定が更新されました。", 3000)
             self.kobold_client.reload_settings()
+            self.autocomplete_manager.reload_settings()  # オートコンプリート設定も再読み込み
         else:
             self.status_bar.showMessage("KoboldCpp 設定の変更はキャンセルされました。", 3000)
 
@@ -336,6 +367,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             self.status_bar.showMessage("生成パラメータが更新されました。", 3000)
             self.kobold_client.reload_settings()
+            self.autocomplete_manager.reload_settings()  # オートコンプリート設定も再読み込み
         else:
             self.status_bar.showMessage("生成パラメータの変更はキャンセルされました。", 3000)
 
@@ -343,6 +375,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def _trigger_single_generation(self):
         """Starts a single generation task, or stops it if already running."""
+        # 生成開始前にゴーストテキストをクリア
+        if hasattr(self, 'autocomplete_manager') and self.autocomplete_manager:
+            self.autocomplete_manager.clear_ghost_text()
+        
         if self.generation_status == "single_running":
             # If single generation is running, stop it.
             self._stop_current_generation()
@@ -541,6 +577,10 @@ class MainWindow(QMainWindow):
 
     def _start_infinite_generation(self):
         """Starts the infinite generation loop."""
+        # 生成開始前にゴーストテキストをクリア
+        if hasattr(self, 'autocomplete_manager') and self.autocomplete_manager:
+            self.autocomplete_manager.clear_ghost_text()
+        
         self.generation_status = "infinite_running"
         self.infinite_warning_shown = False # Reset warning flag for new session
         self._update_ui_for_generation_start()
@@ -1088,6 +1128,11 @@ class MainWindow(QMainWindow):
         print("Cleaning up...")
         if self.generation_status != "idle":
             self._stop_current_generation() # Attempt to stop gracefully
+        
+        # AutocompleteManagerのクリーンアップ
+        if hasattr(self, 'autocomplete_manager'):
+            self.autocomplete_manager.cleanup()
+        
         print("Requesting Kobold client close...")
         try:
             await self.kobold_client.close() # Await the async close
@@ -1238,6 +1283,14 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("モード: 小説生成", 2000)
         if self.idea_controls_widget:
             self.idea_controls_widget.hide()
+        # 小説生成モードに戻った時、本文補完機能のチェックボックスを有効化（チェック状態はOFFに戻す）
+        self.autocomplete_checkbox.setEnabled(True)
+        self.autocomplete_checkbox.setChecked(False)
+        if hasattr(self, 'autocomplete_manager'):
+            self.autocomplete_manager.set_enabled(False)
+        
+        # ショートカット表示を更新
+        self._update_shortcut_display()
 
     @Slot()
     def _set_mode_idea(self):
@@ -1252,6 +1305,37 @@ class MainWindow(QMainWindow):
         if self.idea_controls_widget:
             self.idea_controls_widget.show()
             self._update_idea_fast_mode_state() # Update checkbox state when switching to idea mode
+            # アイデア出しモードでは本文補完機能を無効化
+            self.autocomplete_checkbox.setEnabled(False)
+            self.autocomplete_checkbox.setChecked(False)
+            if hasattr(self, 'autocomplete_manager'):
+                self.autocomplete_manager.set_enabled(False)
+            
+            # ショートカット表示を更新
+            self._update_shortcut_display()
+
+    @Slot()
+    def _toggle_autocomplete_mode(self, checked):
+        """Toggle autocomplete mode with exclusive control."""
+        if checked:
+            # 執筆支援モードをONにする時、無限生成が動いていれば停止
+            if self.generation_status == "infinite_running":
+                QMessageBox.information(self, "無限生成停止", "無限生成を停止して、本文補完機能を有効化しました。")
+                self._stop_current_generation()
+            # オートコンプリートを有効化
+            if hasattr(self, 'autocomplete_manager'):
+                self.autocomplete_manager.set_enabled(True)
+                # 有効化直後にデバウンスタイマーを開始して、すぐにオートコンプリートが動作するようにする
+                self.autocomplete_manager.debounce_timer.start(self.autocomplete_manager.debounce_ms)
+            self.status_bar.showMessage("本文補完機能: ON", 2000)
+        else:
+            # 執筆支援モードをOFFにする時
+            if hasattr(self, 'autocomplete_manager'):
+                self.autocomplete_manager.set_enabled(False)
+            self.status_bar.showMessage("本文補完機能: OFF", 2000)
+        
+        # ショートカット表示を更新
+        self._update_shortcut_display()
 
     @Slot()
     def _update_idea_fast_mode_state(self):
@@ -1268,6 +1352,33 @@ class MainWindow(QMainWindow):
             self.idea_fast_mode_check.setChecked(False) # Uncheck when disabled
         else:
             self.idea_fast_mode_check.setEnabled(True)
+
+    def eventFilter(self, obj, event):
+        """
+        イベントフィルター - main_text_editのキーイベントを処理
+        
+        Args:
+            obj: イベントを受けたオブジェクト
+            event: イベント
+            
+        Returns:
+            イベントを処理した場合True
+        """
+        if obj == self.main_text_edit and self.autocomplete_manager:
+            # キー押下イベント
+            if event.type() == QEvent.Type.KeyPress:
+                # Ctrl+Space: 手動でオートコンプリートをトリガー（補完機能が有効な場合のみ）
+                if (event.key() == Qt.Key_Space and
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier and
+                    self.autocomplete_checkbox.isChecked()):
+                    self.autocomplete_manager.trigger_now()
+                    return True
+                
+                # その他のキーイベントはAutocompleteManagerに委譲（補完機能が有効な場合のみ）
+                if self.autocomplete_checkbox.isChecked() and self.autocomplete_manager.handle_key_press(event):
+                    return True
+        
+        return super().eventFilter(obj, event)
 
     @Slot()
     def _on_token_timer_timeout(self):
@@ -1340,6 +1451,21 @@ class MainWindow(QMainWindow):
             # Fallback display on error
             self.token_label.setText(f"本文文字数{main_text_chars:,}文字(計算中...) | 全プロンプト: 計算中 / 0トークン")
             print(f"Token calculation error: {e}")
+    
+    def _update_shortcut_display(self):
+        """ショートカットキーの表示を更新する"""
+        if not hasattr(self, 'shortcut_label'):
+            return
+            
+        # 基本のショートカット
+        base_shortcuts = "単発生成: Ctrl+G | 無限生成: F5"
+        
+        # 本文補完機能が有効な場合の追加ショートカット（共通表示）
+        if self.autocomplete_checkbox.isChecked():
+            autocomplete_shortcuts = " || 確定: Tab | キャンセル: Esc | 手動補完: Ctrl+Space"
+            self.shortcut_label.setText(base_shortcuts + autocomplete_shortcuts)
+        else:
+            self.shortcut_label.setText(base_shortcuts)
 
 
 if __name__ == "__main__":
