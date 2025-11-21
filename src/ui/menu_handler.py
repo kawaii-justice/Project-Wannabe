@@ -2,6 +2,7 @@ import sys
 import os # Add os import
 import sys
 import os # Add os import
+from contextlib import contextmanager
 from PySide6.QtWidgets import (QMenuBar, QFileDialog, QMessageBox, QDialog, QWidget, # Add QWidget
                                QFontDialog, QApplication, QCheckBox, QLabel, # Add QLabel
                                QVBoxLayout, QDialogButtonBox, QTextEdit, QPlainTextEdit, QLineEdit) # Add TextEdit types
@@ -31,6 +32,29 @@ class MenuHandler:
         # Store reference to the main window to access its widgets and methods
         self.main_window = main_window
         self.current_project_path: str | None = None # Store path for Save action
+
+    @contextmanager
+    def _suspend_autocomplete(self):
+        """
+        ファイル操作中にオートコンプリートを一時的に無効化し、
+        ゴーストテキストの混入や競合を防ぐコンテキストマネージャ。
+        """
+        manager = getattr(self.main_window, 'autocomplete_manager', None)
+        was_enabled = False
+        
+        if manager:
+            was_enabled = manager.is_enabled
+            # 無効化することで、ゴーストテキスト消去・タイマー停止・タスクキャンセルが一括で行われる
+            manager.set_enabled(False)
+            
+        try:
+            yield
+        finally:
+            # 元の状態が有効だった場合のみ復帰させる
+            if manager and was_enabled:
+                manager.set_enabled(True)
+                # デバウンスタイマーを再始動して、次の入力を監視
+                manager.debounce_timer.start()
 
     def create_menu_bar(self) -> QMenuBar:
         """Creates and returns the main QMenuBar."""
@@ -82,137 +106,152 @@ class MenuHandler:
     @Slot()
     def _open_project(self):
         """Handles the 'File > Open...' action."""
-        filepath, _ = QFileDialog.getOpenFileName(
-            self.main_window,
-            "プロジェクトファイルを開く",
-            "", # Start directory (optional)
-            "Project Wannabe Files (*.json);;All Files (*)"
-        )
-        if not filepath:
-            return
+        with self._suspend_autocomplete():
+            filepath, _ = QFileDialog.getOpenFileName(
+                self.main_window,
+                "プロジェクトファイルを開く",
+                "", # Start directory (optional)
+                "Project Wannabe Files (*.json);;All Files (*)"
+            )
+            if not filepath:
+                return
 
-        try:
-            project_data = load_project_data(filepath)
-            self._apply_project_data(project_data)
-            self.current_project_path = filepath
-            self.main_window.status_bar.showMessage(f"プロジェクト '{os.path.basename(filepath)}' を読み込みました。", 5000)
-            self.main_window.setWindowTitle(f"Project Wannabe - {os.path.basename(filepath)}")
-        except ProjectIOError as e:
-            QMessageBox.critical(self.main_window, "読み込みエラー", f"プロジェクトファイルの読み込みに失敗しました:\n{e}")
-            self.current_project_path = None
-            self.main_window.setWindowTitle("Project Wannabe (仮称)")
+            try:
+                project_data = load_project_data(filepath)
+                self._apply_project_data(project_data)
+                self.current_project_path = filepath
+                self.main_window.status_bar.showMessage(f"プロジェクト '{os.path.basename(filepath)}' を読み込みました。", 5000)
+                self.main_window.setWindowTitle(f"Project Wannabe - {os.path.basename(filepath)}")
+            except ProjectIOError as e:
+                QMessageBox.critical(self.main_window, "読み込みエラー", f"プロジェクトファイルの読み込みに失敗しました:\n{e}")
+                self.current_project_path = None
+                self.main_window.setWindowTitle("Project Wannabe (仮称)")
 
 
     @Slot()
     def _save_project_as(self):
         """Handles the 'File > Save As...' action."""
-        filepath, _ = QFileDialog.getSaveFileName(
-            self.main_window,
-            "プロジェクトを名前を付けて保存",
-            self.current_project_path or "", # Start directory
-            "Project Wannabe Files (*.json);;All Files (*)"
-        )
-        if not filepath:
-            return
+        with self._suspend_autocomplete():
+            filepath, _ = QFileDialog.getSaveFileName(
+                self.main_window,
+                "プロジェクトを名前を付けて保存",
+                self.current_project_path or "", # Start directory
+                "Project Wannabe Files (*.json);;All Files (*)"
+            )
+            if not filepath:
+                return
 
-        # Ensure the extension is .json
-        if not filepath.lower().endswith(".json"):
-            filepath += ".json"
+            # Ensure the extension is .json
+            if not filepath.lower().endswith(".json"):
+                filepath += ".json"
 
-        try:
-            project_data = self._collect_project_data()
-            save_project_data(filepath, project_data)
-            self.current_project_path = filepath
-            self.main_window.status_bar.showMessage(f"プロジェクトを '{os.path.basename(filepath)}' として保存しました。", 5000)
-            self.main_window.setWindowTitle(f"Project Wannabe - {os.path.basename(filepath)}")
-        except (ProjectIOError, ValueError) as e: # Catch potential errors from collect_project_data
-            QMessageBox.critical(self.main_window, "保存エラー", f"プロジェクトの保存に失敗しました:\n{e}")
+            try:
+                project_data = self._collect_project_data()
+                save_project_data(filepath, project_data)
+                self.current_project_path = filepath
+                self.main_window.status_bar.showMessage(f"プロジェクトを '{os.path.basename(filepath)}' として保存しました。", 5000)
+                self.main_window.setWindowTitle(f"Project Wannabe - {os.path.basename(filepath)}")
+            except (ProjectIOError, ValueError) as e: # Catch potential errors from collect_project_data
+                QMessageBox.critical(self.main_window, "保存エラー", f"プロジェクトの保存に失敗しました:\n{e}")
 
 
     @Slot()
     def _save_project(self):
         """Handles the 'File > Save' action."""
-        if not self.current_project_path:
-            # If no path is set (e.g., new project or opened without saving yet),
-            # delegate to Save As...
-            self._save_project_as()
-            return
+        with self._suspend_autocomplete():
+            if not self.current_project_path:
+                # If no path is set (e.g., new project or opened without saving yet),
+                # delegate to Save As...
+                self._save_project_as()
+                return
 
-        # If a path exists, proceed with saving to that path
-        try:
-            project_data = self._collect_project_data()
-            save_project_data(self.current_project_path, project_data)
-            # Use os.path.basename to show only the filename in the status message
-            self.main_window.status_bar.showMessage(f"プロジェクト '{os.path.basename(self.current_project_path)}' を上書き保存しました。", 3000)
-        except (ProjectIOError, ValueError) as e:
-            QMessageBox.critical(self.main_window, "上書き保存エラー", f"プロジェクトの上書き保存に失敗しました:\n{e}")
+            # If a path exists, proceed with saving to that path
+            try:
+                project_data = self._collect_project_data()
+                save_project_data(self.current_project_path, project_data)
+                # Use os.path.basename to show only the filename in the status message
+                self.main_window.status_bar.showMessage(f"プロジェクト '{os.path.basename(self.current_project_path)}' を上書き保存しました。", 3000)
+            except (ProjectIOError, ValueError) as e:
+                QMessageBox.critical(self.main_window, "上書き保存エラー", f"プロジェクトの上書き保存に失敗しました:\n{e}")
 
 
     @Slot()
     def _export_output(self):
         """Handles the 'File > Export Output...' action."""
-        # Create a custom dialog or use QMessageBox with a checkbox
-        dialog = QDialog(self.main_window)
-        dialog.setWindowTitle("出力内容を書き出し")
-        layout = QVBoxLayout(dialog)
-        label = QLabel("出力内容をテキストファイルとして書き出します。")
-        checkbox = QCheckBox("ファイル冒頭に現在のタイトルを含める")
-        checkbox.setChecked(True) # Default to include title
-        button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        with self._suspend_autocomplete():
+            # Create a custom dialog or use QMessageBox with a checkbox
+            dialog = QDialog(self.main_window)
+            dialog.setWindowTitle("出力内容を書き出し")
+            layout = QVBoxLayout(dialog)
+            label = QLabel("出力内容をテキストファイルとして書き出します。")
+            checkbox = QCheckBox("ファイル冒頭に現在のタイトルを含める")
+            checkbox.setChecked(True) # Default to include title
+            button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
 
-        layout.addWidget(label)
-        layout.addWidget(checkbox)
-        layout.addWidget(button_box)
+            layout.addWidget(label)
+            layout.addWidget(checkbox)
+            layout.addWidget(button_box)
 
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
+            button_box.accepted.connect(dialog.accept)
+            button_box.rejected.connect(dialog.reject)
 
-        if dialog.exec() != QDialog.Accepted:
-            return
+            if dialog.exec() != QDialog.Accepted:
+                return
 
-        include_title = checkbox.isChecked()
-        current_title = self.main_window.title_edit.text() if hasattr(self.main_window, 'title_edit') else None
+            include_title = checkbox.isChecked()
+            current_title = self.main_window.title_edit.text() if hasattr(self.main_window, 'title_edit') else None
 
-        if include_title and not current_title:
-             QMessageBox.warning(self.main_window, "タイトル未設定", "タイトルを含めるオプションが選択されましたが、詳細情報タブでタイトルが設定されていません。")
-            # Optionally proceed without title or return
-            # return
+            if include_title and not current_title:
+                # 警告を出してユーザーに確認
+                reply = QMessageBox.warning(
+                    self.main_window,
+                    "タイトル未設定",
+                    "タイトルを含めるオプションが選択されましたが、詳細情報タブでタイトルが設定されていません。\n\n無効にして保存を続行しますか？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    # ユーザーがOKしたらタイトル含むオプションを無効にして続行
+                    include_title = False
+                else:
+                    # キャンセルしたら処理を中断
+                    return
 
-        filepath, _ = QFileDialog.getSaveFileName(
-            self.main_window,
-            "本文内容を書き出し", # Dialog title changed
-            "", # Start directory
-            "Text Files (*.txt);;All Files (*)"
-        )
-        if not filepath:
-            return
+            filepath, _ = QFileDialog.getSaveFileName(
+                self.main_window,
+                "本文内容を書き出し", # Dialog title changed
+                "", # Start directory
+                "Text Files (*.txt);;All Files (*)"
+            )
+            if not filepath:
+                return
 
-        # Ensure the extension is .txt
-        if not filepath.lower().endswith(".txt"):
-            filepath += ".txt"
+            # Ensure the extension is .txt
+            if not filepath.lower().endswith(".txt"):
+                filepath += ".txt"
 
-        try:
-            # *** FIX: Get text from main_text_edit, not output_text_edit ***
-            if not hasattr(self.main_window, 'main_text_edit'):
-                 raise AttributeError("本文エリア (main_text_edit) が見つかりません。")
-            output_text = self.main_window.main_text_edit.toPlainText() # Changed target widget
+            try:
+                # *** FIX: Get text from main_text_edit, not output_text_edit ***
+                if not hasattr(self.main_window, 'main_text_edit'):
+                     raise AttributeError("本文エリア (main_text_edit) が見つかりません。")
+                output_text = self.main_window.main_text_edit.toPlainText() # Changed target widget
 
-            # --- DEBUGGING START ---
-            print(f"--- Debug Export Output ---")
-            print(f"Accessing widget: self.main_window.main_text_edit") # Changed widget name
-            print(f"Widget objectName: {self.main_window.main_text_edit.objectName() if hasattr(self.main_window.main_text_edit, 'objectName') else 'N/A'}") # Check object name if set
-            print(f"Widget Type: {type(self.main_window.main_text_edit)}") # Changed widget type
-            print(f"Include Title: {include_title}, Title: {current_title}")
-            print(f"Output Text Length: {len(output_text)}")
-            # print(f"Output Text Content:\n---\n{output_text[:500]}...\n---") # Print first 500 chars
-            # --- DEBUGGING END ---
+                # --- DEBUGGING START ---
+                print(f"--- Debug Export Output ---")
+                print(f"Accessing widget: self.main_window.main_text_edit") # Changed widget name
+                print(f"Widget objectName: {self.main_window.main_text_edit.objectName() if hasattr(self.main_window.main_text_edit, 'objectName') else 'N/A'}") # Check object name if set
+                print(f"Widget Type: {type(self.main_window.main_text_edit)}") # Changed widget type
+                print(f"Include Title: {include_title}, Title: {current_title}")
+                print(f"Output Text Length: {len(output_text)}")
+                # print(f"Output Text Content:\n---\n{output_text[:500]}...\n---") # Print first 500 chars
+                # --- DEBUGGING END ---
 
-            save_output_text(filepath, output_text, include_title, current_title)
-            self.main_window.status_bar.showMessage(f"出力内容を '{os.path.basename(filepath)}' に書き出しました。", 5000)
-        except (ProjectIOError, ValueError, AttributeError) as e: # Added AttributeError
-            QMessageBox.critical(self.main_window, "書き出しエラー", f"出力内容の書き出しに失敗しました:\n{e}")
-        # except AttributeError: # Handled above
-        #      QMessageBox.critical(self.main_window, "エラー", "出力テキストエリアが見つかりません。")
+                save_output_text(filepath, output_text, include_title, current_title)
+                self.main_window.status_bar.showMessage(f"出力内容を '{os.path.basename(filepath)}' に書き出しました。", 5000)
+            except (ProjectIOError, ValueError, AttributeError) as e: # Added AttributeError
+                QMessageBox.critical(self.main_window, "書き出しエラー", f"出力内容の書き出しに失敗しました:\n{e}")
+            # except AttributeError: # Handled above
+            #      QMessageBox.critical(self.main_window, "エラー", "出力テキストエリアが見つかりません。")
 
 
     def _collect_project_data(self) -> dict:
