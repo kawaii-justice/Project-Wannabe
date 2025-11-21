@@ -1,7 +1,5 @@
 import sys
 import os # Add os import
-import sys
-import os # Add os import
 from contextlib import contextmanager
 from PySide6.QtWidgets import (QMenuBar, QFileDialog, QMessageBox, QDialog, QWidget, # Add QWidget
                                QFontDialog, QApplication, QCheckBox, QLabel, # Add QLabel
