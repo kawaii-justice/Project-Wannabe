@@ -1365,6 +1365,12 @@ class MainWindow(QMainWindow):
             イベントを処理した場合True
         """
         if obj == self.main_text_edit and self.autocomplete_manager:
+            # IME入力イベント（日本語入力開始時にゴーストテキストを消去）
+            if event.type() == QEvent.Type.InputMethod:
+                if self.autocomplete_checkbox.isChecked() and self.autocomplete_manager.has_ghost_text():
+                    self.autocomplete_manager.clear_ghost_text()
+                return False  # イベントを握りつぶさない
+            
             # キー押下イベント
             if event.type() == QEvent.Type.KeyPress:
                 # Ctrl+Space: 手動でオートコンプリートをトリガー（補完機能が有効な場合のみ）

@@ -127,6 +127,9 @@ class AutocompleteManager(QObject):
                 print("[AutocompleteManager] Skipping - text is empty")
                 return
             
+            # 生成開始前のカーソル位置を保存（生成中にカーソルが移動したかを判定するため）
+            start_cursor_pos = cursor.position()
+            
             # メインウィンドウからUIデータを取得
             # main_windowへの参照を保持していないため、親ウィンドウをたどって取得
             main_window = self.main_text_edit.parent()
@@ -174,6 +177,12 @@ class AutocompleteManager(QObject):
             
             # ゴーストテキストを表示（無効化時の表示残留バグ防止）
             if generated_text:
+                # 生成完了後にカーソル位置をチェック（生成中にカーソルが移動したかを判定）
+                current_cursor_pos = self.main_text_edit.textCursor().position()
+                if start_cursor_pos != current_cursor_pos:
+                    print("[AutocompleteManager] Cursor moved during generation, skipping display.")
+                    return
+                
                 # 機能が無効化されている場合は表示しない
                 if not self.is_enabled:
                     print("[AutocompleteManager] Skipping ghost text display - autocomplete disabled during generation")
