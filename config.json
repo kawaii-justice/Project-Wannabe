@@ -2,12 +2,13 @@
     "kobold_port": 5001,
     "max_length_idea": 800,
     "max_length_generate": 250,
-    "temperature": 0.8000000000000003,
+    "temperature": 0.8,
     "min_p": 0.1,
     "top_p": 0.95,
     "top_k": 40,
     "rep_pen": 1.1,
     "stop_sequences": [],
+    "banned_tokens": [],
     "infinite_generation_behavior": {
         "idea": "immediate",
         "generate": "immediate"

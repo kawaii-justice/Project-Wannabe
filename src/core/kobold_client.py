@@ -74,6 +74,8 @@ class KoboldClient:
             "rep_pen": self._current_settings.get("rep_pen"),
             # Stop sequence handling: prioritize argument over settings
             "stop_sequence": stop_sequence if stop_sequence is not None else self._current_settings.get("stop_sequences", []),
+            # Banned tokens (Phrase Banning): load from settings by default
+            "banned_tokens": self._current_settings.get("banned_tokens", []),
         }
         if generation_params:
             # Ensure generation_params doesn't overwrite the prioritized stop_sequence
@@ -94,7 +96,7 @@ class KoboldClient:
         if current_mode == "generate":
             payload["ban_eos_token"] = True
         
-        # Handle banned_strings (KoboldCpp native Phrase Banning)
+        # Handle banned_strings argument: if provided, override the default banned_tokens from settings
         if banned_strings is not None:
             payload["banned_tokens"] = banned_strings
         

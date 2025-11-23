@@ -14,6 +14,7 @@ DEFAULT_SETTINGS = {
     "top_k": 0, # Add Top-K setting (0 means disabled in many Kobold setups)
     "rep_pen": 1.0,
     "stop_sequences": ["[INST]", "[/INST]"], # Default stop sequences
+    "banned_tokens": [], # Default banned tokens list (Phrase Banning)
     "infinite_generation_behavior": { # Add new setting for infinite generation behavior
         "idea": "manual", # "immediate" or "manual"
         "generate": "manual" # "immediate" or "manual"

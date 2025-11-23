@@ -154,6 +154,11 @@ class GenerationParamsDialog(QDialog):
         compression_section.addWidget(compression_group)
         main_layout.addWidget(compression_section)
 
+        # --- Generation Control Section (Stop Sequences & Banned Tokens) ---
+        gen_control_section = CollapsibleSection("生成制御 (ストップシーケンス・禁止ワード)")
+        gen_control_group = QGroupBox()
+        gen_control_layout = QVBoxLayout(gen_control_group)
+
         # Stop Sequences
         stop_seq_label = QLabel("ストップシーケンス (1行に1つ):")
         self.stop_seq_edit = QTextEdit()
@@ -161,8 +166,22 @@ class GenerationParamsDialog(QDialog):
         self.stop_seq_edit.setPlaceholderText("例:\n[INST]\n[/INST]\n<|endoftext|>")
         stop_sequences = self.current_settings.get("stop_sequences", DEFAULT_SETTINGS["stop_sequences"])
         self.stop_seq_edit.setText("\n".join(stop_sequences))
-        main_layout.addWidget(stop_seq_label)
-        main_layout.addWidget(self.stop_seq_edit)
+        gen_control_layout.addWidget(stop_seq_label)
+        gen_control_layout.addWidget(self.stop_seq_edit)
+
+        # Banned Tokens (Phrase Banning)
+        banned_tokens_label = QLabel("禁止ワード (1行に1つ):")
+        self.banned_tokens_edit = QTextEdit()
+        self.banned_tokens_edit.setAcceptRichText(False)
+        self.banned_tokens_edit.setPlaceholderText("例:\n<|endoftext|>\n特定の単語")
+        banned_tokens = self.current_settings.get("banned_tokens", DEFAULT_SETTINGS["banned_tokens"])
+        self.banned_tokens_edit.setText("\n".join(banned_tokens))
+        gen_control_layout.addWidget(banned_tokens_label)
+        gen_control_layout.addWidget(self.banned_tokens_edit)
+
+        gen_control_section.addWidget(gen_control_group)
+        main_layout.addWidget(gen_control_section)
+        # --- End Generation Control Section ---
 
         # --- Continuation Prompt Order Setting ---
         cont_order_section = CollapsibleSection("継続タスクのプロンプト順序")
@@ -292,6 +311,7 @@ class GenerationParamsDialog(QDialog):
 
         # 折りたたみセクションを初期状態で閉じる
         compression_section.toggle_button.setChecked(False)
+        gen_control_section.toggle_button.setChecked(False)
         cont_order_section.toggle_button.setChecked(False)
         inf_gen_section.toggle_button.setChecked(False)
         transfer_section.toggle_button.setChecked(False)
@@ -317,6 +337,11 @@ class GenerationParamsDialog(QDialog):
         stop_sequences_text = self.stop_seq_edit.toPlainText()
         stop_sequences_list = [line.strip() for line in stop_sequences_text.splitlines() if line.strip()]
         self.current_settings["stop_sequences"] = stop_sequences_list
+
+        # Process banned tokens: split by newline, strip whitespace, remove empty lines
+        banned_tokens_text = self.banned_tokens_edit.toPlainText()
+        banned_tokens_list = [line.strip() for line in banned_tokens_text.splitlines() if line.strip()]
+        self.current_settings["banned_tokens"] = banned_tokens_list
 
         # Save continuation prompt order setting
         self.current_settings["cont_prompt_order"] = self.cont_order_combo.currentData()

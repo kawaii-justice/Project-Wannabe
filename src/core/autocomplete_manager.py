@@ -166,19 +166,29 @@ class AutocompleteManager(QObject):
             # 生成を実行
             print(f"[AutocompleteManager] Starting generation - max_length: {self.max_length}")
             
-            # 設定を確認して改行禁止リストを作成
+            # 設定の禁止ワードを取得してコピー
+            banned_strings_list = self.settings.get("banned_tokens", []).copy()
+            
+            # 改行禁止設定がオンの場合、改行を追加（上書きではなくマージ）
             ban_newlines = self.settings.get("autocomplete_ban_newlines", False)
-            banned_strings = ["\n"] if ban_newlines else None
+            if ban_newlines:
+                if "\n" not in banned_strings_list:
+                    banned_strings_list.append("\n")
+                print(f"[AutocompleteManager] Banning newlines in generation (added to banned tokens)")
+            
+            # banned_strings_listが空でない場合のみ渡す
+            banned_strings = banned_strings_list if banned_strings_list else None
+            
             if banned_strings:
-                print(f"[AutocompleteManager] Banning newlines in generation")
+                print(f"[AutocompleteManager] Using banned tokens: {banned_strings}")
             
             generated_text = ""
             
             async for token in self.kobold_client.generate_stream(
                 prompt,
                 max_length=self.max_length,
-                stop_sequence=[],  # 空リスト
-                banned_strings=banned_strings,  # 改行禁止設定
+                stop_sequence=None,  # 設定のストップシーケンスを使用
+                banned_strings=banned_strings,  # マージされた禁止ワードリスト
                 current_mode="autocomplete"
             ):
                 generated_text += token
