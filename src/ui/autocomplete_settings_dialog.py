@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox,
                                QDialogButtonBox, QWidget, QGroupBox, QRadioButton,
-                               QFormLayout)
+                               QFormLayout, QCheckBox)
 from PySide6.QtCore import Slot
 from src.core.settings import load_settings, save_settings, DEFAULT_SETTINGS
 
@@ -31,6 +31,11 @@ class AutocompleteSettingsDialog(QDialog):
 
         main_layout.addLayout(form_layout)
 
+        # 改行抑制設定
+        self.ban_newlines_checkbox = QCheckBox("改行を生成しない")
+        self.ban_newlines_checkbox.setChecked(self.current_settings.get("autocomplete_ban_newlines", DEFAULT_SETTINGS["autocomplete_ban_newlines"]))
+        main_layout.addWidget(self.ban_newlines_checkbox)
+
         # 動作モード設定
         mode_group = QGroupBox("動作モード")
         mode_layout = QVBoxLayout(mode_group)
@@ -60,6 +65,7 @@ class AutocompleteSettingsDialog(QDialog):
         """設定を保存してダイアログを閉じる"""
         self.current_settings["max_length_autocomplete"] = self.max_length_spinbox.value()
         self.current_settings["autocomplete_debounce_ms"] = self.debounce_spinbox.value()
+        self.current_settings["autocomplete_ban_newlines"] = self.ban_newlines_checkbox.isChecked()
         
         # 動作モードの保存
         if self.manual_radio.isChecked():

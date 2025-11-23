@@ -165,12 +165,20 @@ class AutocompleteManager(QObject):
             
             # 生成を実行
             print(f"[AutocompleteManager] Starting generation - max_length: {self.max_length}")
+            
+            # 設定を確認して改行禁止リストを作成
+            ban_newlines = self.settings.get("autocomplete_ban_newlines", False)
+            banned_strings = ["\n"] if ban_newlines else None
+            if banned_strings:
+                print(f"[AutocompleteManager] Banning newlines in generation")
+            
             generated_text = ""
             
             async for token in self.kobold_client.generate_stream(
                 prompt,
                 max_length=self.max_length,
                 stop_sequence=[],  # 空リスト
+                banned_strings=banned_strings,  # 改行禁止設定
                 current_mode="autocomplete"
             ):
                 generated_text += token
@@ -217,7 +225,7 @@ class AutocompleteManager(QObject):
         self.debounce_ms = self.settings.get("autocomplete_debounce_ms", DEFAULT_SETTINGS["autocomplete_debounce_ms"])
         self.max_length = self.settings.get("max_length_autocomplete", DEFAULT_SETTINGS["max_length_autocomplete"])
         self.trigger_mode = self.settings.get("autocomplete_trigger_mode", DEFAULT_SETTINGS["autocomplete_trigger_mode"])
-        print(f"[AutocompleteManager] Settings reloaded - debounce: {self.debounce_ms}ms, max_length: {self.max_length}, mode: {self.trigger_mode}")
+        print(f"[AutocompleteManager] Settings reloaded - debounce: {self.debounce_ms}ms, max_length: {self.max_length}, mode: {self.trigger_mode}, ban_newlines: {self.settings.get('autocomplete_ban_newlines', False)}")
     
     def set_enabled(self, enabled: bool):
         """

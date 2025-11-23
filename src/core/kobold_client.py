@@ -39,7 +39,8 @@ class KoboldClient:
         max_length: Optional[int] = None, # Add max_length parameter
         generation_params: Optional[Dict[str, Any]] = None,
         stop_sequence: Optional[List[str]] = None, # Add stop_sequence parameter
-        banned_tokens: Optional[List[int]] = None, # Add banned_tokens parameter
+        banned_tokens: Optional[List[int]] = None, # Add banned_tokens parameter (token IDs)
+        banned_strings: Optional[List[str]] = None, # Add banned_strings parameter (string phrases)
         current_mode: Optional[str] = None # Add current_mode parameter to know if it's generate or idea
     ) -> AsyncGenerator[str, None]:
         """
@@ -92,6 +93,10 @@ class KoboldClient:
         # For GEN tasks (generate mode), set ban_eos_token to True
         if current_mode == "generate":
             payload["ban_eos_token"] = True
+        
+        # Handle banned_strings (KoboldCpp native Phrase Banning)
+        if banned_strings is not None:
+            payload["banned_tokens"] = banned_strings
         
         # Handle custom banned_tokens if provided (using logit_bias)
         if banned_tokens is not None:

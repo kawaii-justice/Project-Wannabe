@@ -51,7 +51,8 @@ DEFAULT_SETTINGS = {
     # オートコンプリート設定
     "max_length_autocomplete": 64,  # オートコンプリート用の最大出力長
     "autocomplete_debounce_ms": 1000,  # デバウンス時間（ミリ秒）
-    "autocomplete_trigger_mode": "auto"  # トリガーモード: "auto" または "manual"
+    "autocomplete_trigger_mode": "auto",  # トリガーモード: "auto" または "manual"
+    "autocomplete_ban_newlines": False  # 改行を生成しない (Phrase Banning)
 }
 
 def get_config_path() -> str:
