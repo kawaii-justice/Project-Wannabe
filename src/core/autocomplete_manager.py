@@ -49,6 +49,7 @@ class AutocompleteManager(QObject):
         
         # ゴーストテキスト管理
         self.ghost_text_cursor: Optional[QTextCursor] = None  # ゴーストテキストの範囲を保持
+        self._ghost_insert_revision: Optional[int] = None  # Undo安全判定用（ゴースト挿入直後のdocument revision）
         self._is_showing_ghost_text = False  # ゴーストテキスト表示中フラグ
         self.ghost_text_format = QTextCharFormat()
         # テーマに対応した色を設定（初期値として設定し、show_ghost_textで毎回取得）
@@ -60,8 +61,33 @@ class AutocompleteManager(QObject):
         # シグナルの接続
         self.main_text_edit.textChanged.connect(self._on_text_changed)
         self.main_text_edit.cursorPositionChanged.connect(self._on_cursor_position_changed)
+        self.main_text_edit.installEventFilter(self)
         
         print("[AutocompleteManager] Initialization complete")
+
+    def eventFilter(self, watched, event):
+        """
+        マウス操作（右クリック→貼り付け等）ではUndoスタックのトップがゴースト挿入とは
+        限らないため、ゴーストはremoveSelectedTextで確実に消す。
+        """
+        if watched is self.main_text_edit and self.has_ghost_text():
+            et = event.type()
+            if et == QEvent.ContextMenu:
+                self.clear_ghost_text(prefer_undo=False)
+            elif et == QEvent.MouseButtonPress and hasattr(event, "button") and event.button() == Qt.RightButton:
+                self.clear_ghost_text(prefer_undo=False)
+            elif et in (QEvent.DragEnter, QEvent.Drop):
+                self.clear_ghost_text(prefer_undo=False)
+
+        return super().eventFilter(watched, event)
+
+    def _can_undo_ghost_insertion(self) -> bool:
+        if self.ghost_text_cursor is None or self._ghost_insert_revision is None:
+            return False
+        doc = self.main_text_edit.document()
+        if not doc.isUndoAvailable():
+            return False
+        return doc.revision() == self._ghost_insert_revision
     
     def _on_text_changed(self):
         """テキストが変更された時の処理"""
@@ -286,20 +312,19 @@ class AutocompleteManager(QObject):
         cursor = self.main_text_edit.textCursor()
         insert_position = cursor.position()
         
-        # テキストを挿入
+        # テキストを挿入（挿入+色指定を1つのUndo操作にする）
         cursor.beginEditBlock()
-        cursor.insertText(text)
+        cursor.insertText(text, self.ghost_text_format)
         cursor.endEditBlock()
-        
-        # 挿入したテキストの範囲を選択してフォーマットを適用
-        cursor.setPosition(insert_position)
-        cursor.setPosition(insert_position + len(text), QTextCursor.MoveMode.KeepAnchor)
-        cursor.setCharFormat(self.ghost_text_format)
+        end_position = cursor.position()
+        self._ghost_insert_revision = self.main_text_edit.document().revision()
         
         # ゴーストテキストの範囲を保持
+        cursor.setPosition(insert_position)
+        cursor.setPosition(end_position, QTextCursor.MoveMode.KeepAnchor)
         self.ghost_text_cursor = QTextCursor(cursor)
         self.ghost_text_cursor.setPosition(insert_position)
-        self.ghost_text_cursor.setPosition(insert_position + len(text), QTextCursor.MoveMode.KeepAnchor)
+        self.ghost_text_cursor.setPosition(end_position, QTextCursor.MoveMode.KeepAnchor)
         
         # カーソルを元の位置に戻す
         cursor.setPosition(insert_position)
@@ -310,7 +335,7 @@ class AutocompleteManager(QObject):
         
         print(f"[AutocompleteManager] Ghost text displayed: '{text[:50]}...'")
     
-    def clear_ghost_text(self, restart_timer: bool = False):
+    def clear_ghost_text(self, restart_timer: bool = False, *, prefer_undo: bool = False):
         """
         ゴーストテキストをクリアする
         
@@ -325,10 +350,24 @@ class AutocompleteManager(QObject):
         
         # ゴーストテキストを削除
         cursor = QTextCursor(self.ghost_text_cursor)
-        cursor.removeSelectedText()
+        start_position = cursor.selectionStart()
+        if prefer_undo and self._can_undo_ghost_insertion():
+            # キーボード入力直前など「Undoトップがゴースト挿入」と保証できる場合のみUndoで消す
+            self.main_text_edit.undo()
+            cursor = self.main_text_edit.textCursor()
+            cursor.setPosition(start_position)
+            self.main_text_edit.setTextCursor(cursor)
+        else:
+            # それ以外（マウス操作・貼り付け等）はUndoのトップが別操作の可能性があるため、直接削除する
+            cursor.beginEditBlock()
+            cursor.removeSelectedText()
+            cursor.endEditBlock()
+            cursor.setPosition(start_position)
+            self.main_text_edit.setTextCursor(cursor)
         
         # 保持していた範囲をクリア
         self.ghost_text_cursor = None
+        self._ghost_insert_revision = None
         
         # ゴーストテキスト表示中フラグを解除
         self._is_showing_ghost_text = False
@@ -354,19 +393,33 @@ class AutocompleteManager(QObject):
         # ゴーストテキスト確定中フラグをセット
         self._is_showing_ghost_text = True
         
-        # テキストの色指定を解除してエディタのデフォルト色に戻す
         cursor = QTextCursor(self.ghost_text_cursor)
-        # clearPropertyを使用して色指定を解除
-        cursor.setCharFormat(self.normal_text_format)
-        
-        # カーソルをテキストの末尾に移動
-        end_position = cursor.selectionEnd()
-        cursor.clearSelection()
-        cursor.setPosition(end_position)
-        self.main_text_edit.setTextCursor(cursor)
+        start_position = cursor.selectionStart()
+
+        if self._can_undo_ghost_insertion():
+            # Undoスタック上で「確定」だけが取り消されて灰色に戻るのを防ぐため、
+            # いったんゴースト挿入をUndoし、通常のテキストとして挿入し直す。
+            ghost_text = cursor.selectedText().replace("\u2029", "\n")
+            self.main_text_edit.undo()
+
+            # 同じ位置に通常テキストとして挿入（この挿入が1回のUndoで消える）
+            cursor = self.main_text_edit.textCursor()
+            cursor.setPosition(start_position)
+            cursor.beginEditBlock()
+            cursor.insertText(ghost_text)
+            cursor.endEditBlock()
+            self.main_text_edit.setTextCursor(cursor)
+        else:
+            # 例外ケースでは従来通り「色解除」で確定（誤Undoで別操作を消さない）
+            cursor.setCharFormat(self.normal_text_format)
+            end_position = cursor.selectionEnd()
+            cursor.clearSelection()
+            cursor.setPosition(end_position)
+            self.main_text_edit.setTextCursor(cursor)
         
         # 保持していた範囲をクリア
         self.ghost_text_cursor = None
+        self._ghost_insert_revision = None
         
         # ゴーストテキスト確定中フラグを解除
         self._is_showing_ghost_text = False
@@ -414,7 +467,7 @@ class AutocompleteManager(QObject):
         # Escキー：ゴーストテキストをクリア（タイマー再始動）
         elif key == Qt.Key_Escape:
             if self.has_ghost_text():
-                self.clear_ghost_text(restart_timer=True)
+                self.clear_ghost_text(restart_timer=True, prefer_undo=True)
                 return True
         
         # 修飾キー単体の場合は何もしない（Ctrl、Shift、Altなど）
@@ -424,7 +477,7 @@ class AutocompleteManager(QObject):
         # その他の通常キー：ゴーストテキストをクリアして通常の入力を許可
         else:
             if self.has_ghost_text():
-                self.clear_ghost_text()
+                self.clear_ghost_text(prefer_undo=True)
         
         return False
     
