@@ -9,6 +9,9 @@ DYNAMIC_PROMPT_PATTERN = re.compile(r"\{([^}]+)\}")
 # Handles double quotes, single quotes, or unquoted parts separated by |
 OPTION_PARSE_PATTERN = re.compile(r'"[^"]*"|\'[^\']*\'|[^|]+')
 
+BLOCK_COMMENT_PATTERN = re.compile(r"@/\*.*?@\*/", re.DOTALL)
+LINE_COMMENT_PATTERN = re.compile(r"@//.*?$", re.MULTILINE)
+
 def _parse_options(options_str: str) -> List[str]:
     """Parses the options string, respecting quotes."""
     options = []
@@ -37,8 +40,28 @@ def evaluate_dynamic_prompt(text: str) -> str:
     # Handle None input gracefully
     if text is None:
         return "" # Or return None, depending on desired behavior for None input
-    if not isinstance(text, str) or '{' not in text:
-        return text # Return early if not string or no dynamic prompts seem present
+    if not isinstance(text, str):
+        return text # Return early if not a string
+
+    # Strip comment-out sections before dynamic prompt evaluation
+    text = BLOCK_COMMENT_PATTERN.sub("", text)
+    text = LINE_COMMENT_PATTERN.sub("", text)
+
+    # Apply range control tags after comment stripping
+    last_break = text.rfind("@break")
+    last_startpoint = text.rfind("@startpoint")
+    if last_break != -1 or last_startpoint != -1:
+        if last_break >= last_startpoint:
+            text = text[last_break + len("@break"):]
+        else:
+            text = text[last_startpoint + len("@startpoint"):]
+
+    endpoint_pos = text.find("@endpoint")
+    if endpoint_pos != -1:
+        text = text[:endpoint_pos]
+
+    if '{' not in text:
+        return text # Return early if no dynamic prompts seem present
 
     # Use a function for re.sub to handle each match
     def replace_match(match):
