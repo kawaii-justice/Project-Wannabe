@@ -1,8 +1,8 @@
 {
     "kobold_port": 5001,
-    "max_length_idea": 800,
-    "max_length_generate": 250,
-    "temperature": 0.8,
+    "max_length_idea": 1500,
+    "max_length_generate": 500,
+    "temperature": 0.5,
     "min_p": 0.1,
     "top_p": 0.95,
     "top_k": 40,

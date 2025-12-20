@@ -19,6 +19,7 @@ from src.core.prompt_builder import build_prompt, build_prompt_with_compression
 from src.core.dynamic_prompts import evaluate_dynamic_prompt
 from src.core.settings import load_settings, DEFAULT_SETTINGS
 from src.ui.menu_handler import MenuHandler
+from src.ui.syntax_highlighter import DynamicPromptSyntaxHighlighter
 # Import IdeaProcessor and constants
 from src.core.idea_processor import IdeaProcessor, IDEA_ITEM_ORDER, IDEA_ITEM_ORDER_JA, METADATA_MAP
 from src.core.context_utils import count_tokens, get_available_context, get_true_max_context_length # Import for token counting
@@ -69,6 +70,11 @@ class MainWindow(QMainWindow):
         
         # イベントフィルターをインストール
         self.main_text_edit.installEventFilter(self)
+
+        # Syntax highlighting (comment-out + range-control tags)
+        self._syntax_highlighters = []
+        self._setup_syntax_highlighting()
+        self._on_theme_changed(load_settings().get("theme", "light"))
         
         # 初期状態のショートカット表示を更新
         self._update_shortcut_display()
@@ -183,6 +189,37 @@ class MainWindow(QMainWindow):
         central_splitter.addWidget(self.right_tab_widget)
         central_splitter.setSizes([700, 500])
         left_splitter.setSizes([600, 200])
+
+    def _setup_syntax_highlighting(self):
+        def protected_ghost_spans():
+            manager = getattr(self, "autocomplete_manager", None)
+            if manager is None or not manager.has_ghost_text():
+                return []
+            cursor = manager.ghost_text_cursor
+            if cursor is None:
+                return []
+            start = cursor.selectionStart()
+            end = cursor.selectionEnd()
+            if end <= start:
+                return []
+            return [(start, end)]
+
+        editable_edits = [
+            (self.main_text_edit, protected_ghost_spans),
+            (self.synopsis_edit, None),
+            (self.setting_edit, None),
+            (self.plot_edit, None),
+            (self.authors_note_edit, None),
+            (self.memo_edit, None),
+        ]
+        for edit, protected_provider in editable_edits:
+            self._syntax_highlighters.append(
+                DynamicPromptSyntaxHighlighter(edit, protected_spans_provider=protected_provider)
+            )
+
+    def _on_theme_changed(self, theme_name: str):
+        for highlighter in getattr(self, "_syntax_highlighters", []):
+            highlighter.update_theme()
 
     def _create_details_tab(self):
         self.details_tab_widget = QWidget()
