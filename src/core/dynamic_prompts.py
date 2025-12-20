@@ -11,6 +11,8 @@ OPTION_PARSE_PATTERN = re.compile(r'"[^"]*"|\'[^\']*\'|[^|]+')
 
 BLOCK_COMMENT_PATTERN = re.compile(r"@/\*.*?@\*/", re.DOTALL)
 LINE_COMMENT_PATTERN = re.compile(r"@//.*?$", re.MULTILINE)
+BREAK_PATTERN = re.compile(r"@break|@startpoint")
+ENDPOINT_PATTERN = re.compile(r"@endpoint")
 
 def _parse_options(options_str: str) -> List[str]:
     """Parses the options string, respecting quotes."""
@@ -84,6 +86,62 @@ def evaluate_dynamic_prompt(text: str) -> str:
     # Replace all occurrences
     evaluated_text = DYNAMIC_PROMPT_PATTERN.sub(replace_match, text)
     return evaluated_text
+
+
+def is_position_valid(text: str, cursor_pos: int) -> bool:
+    """
+    Returns True if the cursor position is within the effective prompt range.
+    """
+    if not isinstance(text, str):
+        return True
+    if cursor_pos < 0 or cursor_pos > len(text):
+        return False
+
+    comment_spans = []
+    for match in BLOCK_COMMENT_PATTERN.finditer(text):
+        comment_spans.append((match.start(), match.end()))
+    for match in LINE_COMMENT_PATTERN.finditer(text):
+        start = match.start()
+        end = match.end()
+        if end < len(text) and text[end] in "\r\n":
+            if text[end] == "\r" and end + 1 < len(text) and text[end + 1] == "\n":
+                end += 2
+            else:
+                end += 1
+        comment_spans.append((start, end))
+
+    def _in_comment(pos: int) -> bool:
+        for start, end in comment_spans:
+            if start <= pos < end:
+                return True
+        return False
+
+    if _in_comment(cursor_pos):
+        return False
+
+    last_break_end = None
+    for match in BREAK_PATTERN.finditer(text):
+        if _in_comment(match.start()):
+            continue
+        last_break_end = match.end()
+
+    start_index = last_break_end if last_break_end is not None else 0
+    if cursor_pos < start_index:
+        return False
+
+    endpoint_start = None
+    for match in ENDPOINT_PATTERN.finditer(text):
+        if _in_comment(match.start()):
+            continue
+        if match.start() < start_index:
+            continue
+        endpoint_start = match.start()
+        break
+
+    if endpoint_start is not None and cursor_pos >= endpoint_start:
+        return False
+
+    return True
 
 # --- Example Usage ---
 if __name__ == "__main__":

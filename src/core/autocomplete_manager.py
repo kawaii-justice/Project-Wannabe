@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QPlainTextEdit, QApplication
 from src.core.kobold_client import KoboldClient, KoboldClientError
 from src.core.settings import load_settings, DEFAULT_SETTINGS
 from src.core.prompt_builder import build_prompt, build_prompt_with_compression
+from src.core.dynamic_prompts import evaluate_dynamic_prompt, is_position_valid
 
 
 class AutocompleteManager(QObject):
@@ -147,10 +148,14 @@ class AutocompleteManager(QObject):
             cursor = self.main_text_edit.textCursor()
             cursor_position = cursor.position()
             full_text = self.main_text_edit.toPlainText()
+            if not is_position_valid(full_text, cursor_position):
+                print("[AutocompleteManager] Skipping - cursor position is outside valid range")
+                return
             text_up_to_cursor = full_text[:cursor_position]
+            text_up_to_cursor = evaluate_dynamic_prompt(text_up_to_cursor)
             
             if not text_up_to_cursor.strip():
-                print("[AutocompleteManager] Skipping - text is empty")
+                print("[AutocompleteManager] Skipping - text is empty after filtering")
                 return
             
             # 生成開始前のカーソル位置を保存（生成中にカーソルが移動したかを判定するため）
