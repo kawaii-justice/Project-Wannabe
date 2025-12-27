@@ -462,6 +462,8 @@ class MenuHandler:
             self.main_window.style().unpolish(QApplication.instance())
             self.main_window.style().polish(QApplication.instance())
             self.main_window.update()
+            if hasattr(self.main_window, "_on_theme_changed"):
+                self.main_window._on_theme_changed(theme_name)
 
 
     def _apply_theme(self, theme_name: str) -> bool:
