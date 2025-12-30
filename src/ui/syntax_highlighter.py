@@ -80,6 +80,7 @@ class DynamicPromptSyntaxHighlighter(QSyntaxHighlighter):
     ):
         super().__init__(editor.document())
         self._editor = editor
+        editor.document().contentsChange.connect(self._on_contents_change)
         self._protected_spans_provider = protected_spans_provider
 
         self._format_disabled = QTextCharFormat()
@@ -92,9 +93,55 @@ class DynamicPromptSyntaxHighlighter(QSyntaxHighlighter):
         self._disabled_spans: list[Span] = []
         self._control_spans: list[Span] = []
         self._protected_spans: list[Span] = []
+        self._prev_comment_spans: list[Span] = []
+        self._prev_control_spans: list[Span] = []
         self._palette_signature: Optional[_PaletteSignature] = None
 
         self.update_theme()
+
+    def _touches_span(self, spans: Iterable[Span], start: int, end: int) -> bool:
+        if end <= start:
+            return False
+        for span_start, span_end in spans:
+            if span_end <= start:
+                continue
+            if span_start >= end:
+                return False
+            return True
+        return False
+
+    def _should_rehighlight_global(self, pos: int, chars_removed: int, chars_added: int) -> bool:
+        if chars_removed <= 0 and chars_added <= 0:
+            return False
+
+        doc = self.document()
+        if chars_added > 0:
+            window_start = max(0, pos - 16)
+            window_end = min(doc.characterCount() - 1, pos + chars_added + 16)
+            window = doc.toPlainText()[window_start:window_end]
+            if (
+                "@break" in window
+                or "@startpoint" in window
+                or "@endpoint" in window
+                or "@//" in window
+                or "@/*" in window
+                or "@*/" in window
+            ):
+                return True
+
+        if chars_removed > 0 and self._cached_revision is not None:
+            removed_start = pos
+            removed_end = pos + chars_removed
+            if self._touches_span(self._prev_control_spans, removed_start, removed_end):
+                return True
+            if self._touches_span(self._prev_comment_spans, removed_start, removed_end):
+                return True
+
+        return False
+
+    def _on_contents_change(self, pos: int, chars_removed: int, chars_added: int):
+        if self._should_rehighlight_global(pos, chars_removed, chars_added):
+            self.rehighlight()
 
     def update_theme(self):
         palette = self._editor.palette()
@@ -134,6 +181,8 @@ class DynamicPromptSyntaxHighlighter(QSyntaxHighlighter):
         if self._cached_revision == revision:
             return
 
+        self._prev_comment_spans = self._comment_spans
+        self._prev_control_spans = self._control_spans
         text = doc.toPlainText()
         self._cached_revision = revision
         self._cached_len = len(text)

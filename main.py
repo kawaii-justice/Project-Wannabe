@@ -34,6 +34,7 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 1200, 800)
 
         self.kobold_client = KoboldClient()
+        self._is_closing = False
         # Generation status: "idle", "single_running", "infinite_running"
         self.generation_status = "idle"
         self.generation_task = None # Holds the asyncio task for generation
@@ -55,9 +56,10 @@ class MainWindow(QMainWindow):
         self.main_text_tokens = 0
         self.prompt_tokens = 0
         self.available_context_tokens = 0
-        self.token_update_timer = QTimer()
+        self.token_update_timer = QTimer(self)
+        self.token_update_timer.setSingleShot(True)
         self.token_update_timer.timeout.connect(self._on_token_timer_timeout)
-        self.token_update_timer.start(500)  # Update every 500ms
+        self._token_update_debounce_ms = 1000
 
         # Create UI elements
         self._create_toolbar() # Create toolbar first
@@ -83,6 +85,26 @@ class MainWindow(QMainWindow):
         # These might be called within MenuHandler's creation logic already
         # self.menu_handler._apply_initial_font() # Ensure initial font is applied
         # self.menu_handler._apply_theme(load_settings().get("theme", "light")) # Ensure initial theme
+
+        self._connect_token_update_signals()
+        self._schedule_token_update()
+ 
+    def _connect_token_update_signals(self):
+        self.main_text_edit.textChanged.connect(self._schedule_token_update)
+        self.title_edit.textChanged.connect(self._schedule_token_update)
+        self.synopsis_edit.textChanged.connect(self._schedule_token_update)
+        self.setting_edit.textChanged.connect(self._schedule_token_update)
+        self.plot_edit.textChanged.connect(self._schedule_token_update)
+        self.authors_note_edit.textChanged.connect(self._schedule_token_update)
+        self.keywords_widget.tagsChanged.connect(self._schedule_token_update)
+        self.genre_widget.tagsChanged.connect(self._schedule_token_update)
+        self.rating_combo_details.currentIndexChanged.connect(self._schedule_token_update)
+        self.dialogue_level_combo.currentIndexChanged.connect(self._schedule_token_update)
+
+    def _schedule_token_update(self, *args):
+        if self._is_closing:
+            return
+        self.token_update_timer.start(self._token_update_debounce_ms)
 
     def _create_menu_bar(self):
         """Creates the menu bar using MenuHandler."""
@@ -543,6 +565,7 @@ class MainWindow(QMainWindow):
                         )
                         self.generation_status = "idle"
                         self._update_ui_for_generation_stop()
+                        self._schedule_token_update()
                         self.generation_task = None
                         return
 
@@ -575,6 +598,7 @@ class MainWindow(QMainWindow):
                             if res == QMessageBox.No:
                                 self.generation_status = "idle"
                                 self._update_ui_for_generation_stop()
+                                self._schedule_token_update()
                                 self.generation_task = None
                                 return
 
@@ -664,6 +688,7 @@ class MainWindow(QMainWindow):
             self.generation_task = None
 
         self._update_ui_for_generation_stop()
+        self._schedule_token_update()
         # Add a slight delay before final status message if needed
         # QTimer.singleShot(100, lambda: self.status_bar.showMessage("停止中", 3000))
         self.status_bar.showMessage("停止中", 3000)
@@ -739,6 +764,7 @@ class MainWindow(QMainWindow):
             # Reset status after single run finishes or errors out
             self.generation_status = "idle"
             self._update_ui_for_generation_stop()
+            self._schedule_token_update()
             self.generation_task = None
 
     async def _run_safe_idea_generation(self, prompt: str, stop_sequence: Optional[List[str]], selected_item_key: str):
@@ -800,6 +826,7 @@ class MainWindow(QMainWindow):
             # Reset status after run finishes or errors out
             self.generation_status = "idle"
             self._update_ui_for_generation_stop()
+            self._schedule_token_update()
             self.generation_task = None
 
 
@@ -923,6 +950,7 @@ class MainWindow(QMainWindow):
                     if self.generation_status == "infinite_running":
                         self.generation_status = "idle"
                         self._update_ui_for_generation_stop()
+                        self._schedule_token_update()
                     return False
 
                 # 短すぎ警告（無限生成: 最初の1回のみ）
@@ -1328,6 +1356,7 @@ class MainWindow(QMainWindow):
         
         # ショートカット表示を更新
         self._update_shortcut_display()
+        self._schedule_token_update()
 
     @Slot()
     def _set_mode_idea(self):
@@ -1350,6 +1379,7 @@ class MainWindow(QMainWindow):
             
             # ショートカット表示を更新
             self._update_shortcut_display()
+            self._schedule_token_update()
 
     @Slot()
     def _toggle_autocomplete_mode(self, checked):
@@ -1426,13 +1456,37 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_token_timer_timeout(self):
         """Handles token update timer timeout."""
+        if self._is_closing:
+            return
+        if self.generation_status != "idle":
+            return
         # Use asyncio.ensure_future to run async method without blocking
         asyncio.ensure_future(self._update_token_display())
+
+    def closeEvent(self, event):
+        self._is_closing = True
+        if hasattr(self, "token_update_timer") and self.token_update_timer.isActive():
+            self.token_update_timer.stop()
+
+        manager = getattr(self, "autocomplete_manager", None)
+        if manager is not None:
+            try:
+                manager.cleanup()
+            except Exception as e:
+                print(f"AutocompleteManager cleanup error: {e}")
+
+        if self.generation_task and not self.generation_task.done():
+            self.generation_task.cancel()
+            self.generation_task = None
+        self.generation_status = "idle"
+
+        super().closeEvent(event)
 
     async def _update_token_display(self):
         """Updates the token display in the status bar."""
         # Get current main text
-        main_text = self.main_text_edit.toPlainText()
+        raw_main_text = self.main_text_edit.toPlainText()
+        main_text = evaluate_dynamic_prompt(raw_main_text)
         main_text_chars = len(main_text)
         
         # Skip if no text
