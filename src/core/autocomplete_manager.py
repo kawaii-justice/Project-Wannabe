@@ -191,7 +191,7 @@ class AutocompleteManager(QObject):
                     max_length_generate=self.max_length
                 )
                 thinking_preset = self.settings.get("thinking_template_preset", DEFAULT_SETTINGS.get("thinking_template_preset", "gemma4"))
-                if thinking_preset == "gemma4":
+                if thinking_preset in {"gemma4", "gemma4_general"}:
                     existing_prefill = ""
                     if messages and messages[-1].get("role") == "assistant":
                         existing_prefill = messages[-1].get("content", "")

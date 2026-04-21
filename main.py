@@ -34,6 +34,7 @@ from src.core.thinking import (
     THINKING_STRATEGY_GEMMA4_CHANNEL,
     THINKING_TEMPLATE_DISABLED,
     THINKING_TEMPLATE_GEMMA4,
+    THINKING_TEMPLATE_GEMMA4_GENERAL,
     build_thought_block,
     resolve_thinking_policy,
 )
@@ -237,7 +238,7 @@ class MainWindow(QMainWindow):
 
     def _get_prefill_thinking_strategy(self) -> str:
         preset = self._get_thinking_template_preset()
-        if preset == THINKING_TEMPLATE_GEMMA4:
+        if self._uses_gemma4_thinking_template(preset):
             return THINKING_STRATEGY_GEMMA4_CHANNEL
         if preset == THINKING_TEMPLATE_DISABLED:
             return "disabled"
@@ -253,6 +254,14 @@ class MainWindow(QMainWindow):
             "thinking_template_preset",
             DEFAULT_SETTINGS.get("thinking_template_preset", "gemma4"),
         )
+
+    @staticmethod
+    def _uses_gemma4_thinking_template(preset: str) -> bool:
+        return preset in {THINKING_TEMPLATE_GEMMA4, THINKING_TEMPLATE_GEMMA4_GENERAL}
+
+    @staticmethod
+    def _gemma4_template_injects_think_prefix(preset: str) -> bool:
+        return preset == THINKING_TEMPLATE_GEMMA4
 
     def _split_generic_assistant_prefill(
         self,
@@ -278,20 +287,21 @@ class MainWindow(QMainWindow):
         preset = self._get_thinking_template_preset()
         if preset == THINKING_TEMPLATE_DISABLED:
             return [dict(message) for message in messages], assistant_prefill
-        if preset != THINKING_TEMPLATE_GEMMA4:
+        if not self._uses_gemma4_thinking_template(preset):
             return messages, assistant_prefill
 
         updated_messages = [dict(message) for message in messages]
         updated_prefill = assistant_prefill or ""
 
         if policy.effective_enabled:
-            think_prefix = "<|think|>\n"
-            if updated_messages and updated_messages[0].get("role") == "system":
-                content = updated_messages[0].get("content", "")
-                if not content.startswith(think_prefix):
-                    updated_messages[0]["content"] = think_prefix + content
-            else:
-                updated_messages.insert(0, {"role": "system", "content": think_prefix})
+            if self._gemma4_template_injects_think_prefix(preset):
+                think_prefix = "<|think|>\n"
+                if updated_messages and updated_messages[0].get("role") == "system":
+                    content = updated_messages[0].get("content", "")
+                    if not content.startswith(think_prefix):
+                        updated_messages[0]["content"] = think_prefix + content
+                else:
+                    updated_messages.insert(0, {"role": "system", "content": think_prefix})
         else:
             if not updated_prefill.startswith(GEMMA4_THOUGHT_OPEN):
                 updated_prefill = f"{GEMMA4_THOUGHT_EMPTY}{updated_prefill}"
@@ -326,7 +336,7 @@ class MainWindow(QMainWindow):
     def _build_chat_generation_params(self, policy: ThinkingRequestPolicy) -> Dict[str, object]:
         preset = self._get_thinking_template_preset()
         params: Dict[str, object] = {}
-        if preset != THINKING_TEMPLATE_GEMMA4:
+        if not self._uses_gemma4_thinking_template(preset):
             params["chat_template_kwargs"] = {
                 "enable_thinking": bool(policy.effective_enabled)
             }
@@ -569,7 +579,7 @@ class MainWindow(QMainWindow):
         )
         generation_params = self._build_chat_generation_params(policy)
         first_pass_stop_sequence = list(stop_sequence or [])
-        if self._get_thinking_template_preset() == THINKING_TEMPLATE_GEMMA4:
+        if self._uses_gemma4_thinking_template(self._get_thinking_template_preset()):
             if "<channel|>" not in first_pass_stop_sequence:
                 first_pass_stop_sequence.append("<channel|>")
         reasoning_text = ""
@@ -611,7 +621,7 @@ class MainWindow(QMainWindow):
         if policy.requires_two_pass_prefill and extracted_prefill:
             settings = load_settings()
             strategy = settings.get("prefill_thinking_strategy", "disabled")
-            if self._get_thinking_template_preset() == THINKING_TEMPLATE_GEMMA4:
+            if self._uses_gemma4_thinking_template(self._get_thinking_template_preset()):
                 strategy = THINKING_STRATEGY_GEMMA4_CHANNEL
             reasoning_text = await self._run_two_pass_prefill_reasoning(
                 request_kind=request_kind,

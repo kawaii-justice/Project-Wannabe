@@ -27,7 +27,7 @@ DEFAULT_SETTINGS = {
     "prompt_delivery_mode": "chat_completions_generic",  # "mistral_legacy" or "chat_completions_generic"
     "system_prompt": "あなたはプロの小説家であり、優秀な創作アシスタントです。ユーザーの指示や提供された設定・文脈に沿って、魅力的で自然な小説やアイデアを生成してください。",
     "skip_template_mode_prompt_on_startup": False,
-    "thinking_template_preset": "gemma4",  # "disabled" or "gemma4"
+    "thinking_template_preset": "gemma4",  # "disabled", "gemma4", or "gemma4_general"
     "prefill_thinking_strategy": "disabled",  # "disabled", "think_tags", "gemma4_channel", "custom"
     "prefill_thinking_custom_prefix": "<think>\n",
     "prefill_thinking_custom_suffix": "\n</think>\n",

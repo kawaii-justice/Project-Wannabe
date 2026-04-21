@@ -64,7 +64,7 @@ class ChatTemplateModeStartupDialog(QDialog):
         layout.addWidget(intro_label)
 
         model_info = QLabel(
-            "次のモデルを使っている場合は `wanabiシリーズ` を選択してください。\n"
+            "次のモデルを使っている場合は `旧wanabiシリーズ` を選択してください。\n"
             "kawaimasa/Wanabi-Novelist-24B-GGUF\n"
             "kawaimasa/Wanabi-Novelist-12B-GGUF\n"
             "kawaimasa/wanabi_24b_v1_GGUF\n"
@@ -76,7 +76,7 @@ class ChatTemplateModeStartupDialog(QDialog):
 
         mode_group = QGroupBox("チャットテンプレモード")
         mode_layout = QVBoxLayout(mode_group)
-        self.legacy_radio = QRadioButton("wanabiシリーズ")
+        self.legacy_radio = QRadioButton("旧wanabiシリーズ")
         self.generic_radio = QRadioButton("汎用")
         mode_layout.addWidget(self.legacy_radio)
         mode_layout.addWidget(self.generic_radio)
@@ -193,7 +193,7 @@ class GenerationParamsDialog(QDialog):
         # --- End Default Rating Setting ---
 
         self.prompt_delivery_combo = QComboBox()
-        self.prompt_delivery_combo.addItem("wanabiシリーズ", "mistral_legacy")
+        self.prompt_delivery_combo.addItem("旧wanabiシリーズ", "mistral_legacy")
         self.prompt_delivery_combo.addItem("汎用", "chat_completions_generic")
         current_delivery_mode = self.current_settings.get("prompt_delivery_mode", DEFAULT_SETTINGS.get("prompt_delivery_mode", "mistral_legacy"))
         delivery_index = self.prompt_delivery_combo.findData(current_delivery_mode)
@@ -209,7 +209,8 @@ class GenerationParamsDialog(QDialog):
         form_layout.addRow("System Prompt:", self.system_prompt_edit)
 
         self.thinking_template_preset_combo = QComboBox()
-        self.thinking_template_preset_combo.addItem("Gemma 4", "gemma4")
+        self.thinking_template_preset_combo.addItem("Gemma 4（Wannabeモデル用）", "gemma4")
+        self.thinking_template_preset_combo.addItem("Gemma 4（一般用）", "gemma4_general")
         self.thinking_template_preset_combo.addItem("思考を無効化", "disabled")
         preset_index = self.thinking_template_preset_combo.findData(
             self.current_settings.get(
@@ -558,7 +559,7 @@ class GenerationParamsDialog(QDialog):
     @Slot()
     def _sync_prefill_thinking_strategy_to_template(self):
         preset = self.thinking_template_preset_combo.currentData()
-        if preset == "gemma4":
+        if preset in {"gemma4", "gemma4_general"}:
             strategy = "gemma4_channel"
             enabled = False
         else:
