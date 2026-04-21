@@ -578,6 +578,11 @@ class MainWindow(QMainWindow):
             has_assistant_prefill=False,
         )
         generation_params = self._build_chat_generation_params(policy)
+        first_pass_messages, first_pass_prefill = self._apply_thinking_template_preset(
+            messages=first_pass_messages,
+            assistant_prefill=None,
+            policy=policy,
+        )
         first_pass_stop_sequence = list(stop_sequence or [])
         if self._uses_gemma4_thinking_template(self._get_thinking_template_preset()):
             if "<channel|>" not in first_pass_stop_sequence:
@@ -585,7 +590,7 @@ class MainWindow(QMainWindow):
         reasoning_text = ""
         async for event in self._stream_generation_request(
             messages=first_pass_messages,
-            assistant_prefill=None,
+            assistant_prefill=first_pass_prefill,
             max_length=max_length,
             stop_sequence=first_pass_stop_sequence or None,
             generation_params=generation_params,
