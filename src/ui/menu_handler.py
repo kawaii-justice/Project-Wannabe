@@ -329,6 +329,8 @@ class MenuHandler:
 
         # Reset output area and counter when loading a project
         self.main_window.output_text_edit.clear()
+        if hasattr(self.main_window, "_clear_thinking_output"):
+            self.main_window._clear_thinking_output()
         self.main_window.output_block_counter = 1
 
 

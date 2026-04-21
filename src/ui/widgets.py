@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QToolButton, QFrame,
                                QScrollArea, QLineEdit, QLabel, QPushButton, QSizePolicy, # Keep QSizePolicy
                                QSpacerItem, QLayout)
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, Signal, QSize, QRect, QPoint # Add QSize, QRect, QPoint for FlowLayout
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, Signal, QSize, QRect, QPoint, QEvent # Add QSize, QRect, QPoint for FlowLayout
 from PySide6.QtGui import QResizeEvent
 
 class CollapsibleSection(QWidget):
@@ -24,6 +24,7 @@ class CollapsibleSection(QWidget):
 
         # Use a QWidget as the container for the actual content layout
         self.content_widget = QWidget()
+        self.content_widget.installEventFilter(self)
         self.content_layout = QVBoxLayout(self.content_widget)
         self.content_layout.setContentsMargins(5, 5, 5, 5) # Add some padding
         self.content_area.setWidget(self.content_widget)
@@ -59,6 +60,16 @@ class CollapsibleSection(QWidget):
         self.toggle_animation.addAnimation(animation)
         self.toggle_animation.start()
 
+    def refresh_content_height(self):
+        if self.toggle_button.isChecked():
+            self.content_area.setMaximumHeight(self.content_widget.sizeHint().height() + 10)
+            self.updateGeometry()
+
+    def eventFilter(self, watched, event):
+        if watched is self.content_widget and event.type() in (QEvent.LayoutRequest, QEvent.Resize):
+            self.refresh_content_height()
+        return super().eventFilter(watched, event)
+
     def setContentLayout(self, layout: QVBoxLayout):
         """Sets the layout for the content area."""
         # Remove the old layout and widget if they exist
@@ -83,6 +94,47 @@ class CollapsibleSection(QWidget):
     def addWidget(self, widget: QWidget):
         """Adds a widget to the content layout."""
         self.content_layout.addWidget(widget)
+        self.refresh_content_height()
+
+
+class InlineCollapsibleSection(QWidget):
+    """
+    A collapsible section without an internal scroll area.
+    The content widget grows with its children and relies on outer layouts for scrolling.
+    """
+    def __init__(self, title: str = "", parent: QWidget | None = None):
+        super().__init__(parent)
+
+        self.toggle_button = QToolButton(text=title, checkable=True, checked=False)
+        self.toggle_button.setStyleSheet("QToolButton { border: none; }")
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.toggle_button.setArrowType(Qt.RightArrow)
+        self.toggle_button.clicked.connect(self.set_expanded)
+
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(5, 5, 5, 5)
+        self.content_widget.setVisible(False)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.toggle_button)
+        main_layout.addWidget(self.content_widget)
+
+    def set_expanded(self, expanded: bool):
+        self.toggle_button.setChecked(expanded)
+        self.toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.content_widget.setVisible(expanded)
+        self.updateGeometry()
+
+    def refresh_content_height(self):
+        self.content_widget.updateGeometry()
+        self.updateGeometry()
+
+    def addWidget(self, widget: QWidget):
+        self.content_layout.addWidget(widget)
+        self.refresh_content_height()
 
 
 # Simple Flow Layout (adjust as needed)

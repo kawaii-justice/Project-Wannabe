@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox,
                                QDoubleSpinBox, QTextEdit, QFormLayout, QComboBox,
                                QDialogButtonBox, QWidget, QGroupBox, QRadioButton,
-                               QSpacerItem, QSizePolicy)
+                               QSpacerItem, QSizePolicy, QPlainTextEdit)
 from PySide6.QtCore import Slot
 from src.core.settings import load_settings, save_settings, DEFAULT_SETTINGS
 from src.ui.widgets import CollapsibleSection
@@ -208,7 +208,74 @@ class GenerationParamsDialog(QDialog):
         self.system_prompt_edit.setPlainText(self.current_settings.get("system_prompt", DEFAULT_SETTINGS.get("system_prompt", "")))
         form_layout.addRow("System Prompt:", self.system_prompt_edit)
 
+        self.thinking_template_preset_combo = QComboBox()
+        self.thinking_template_preset_combo.addItem("Gemma 4", "gemma4")
+        self.thinking_template_preset_combo.addItem("思考を無効化", "disabled")
+        preset_index = self.thinking_template_preset_combo.findData(
+            self.current_settings.get(
+                "thinking_template_preset",
+                DEFAULT_SETTINGS.get("thinking_template_preset", "gemma4"),
+            )
+        )
+        if preset_index != -1:
+            self.thinking_template_preset_combo.setCurrentIndex(preset_index)
+        form_layout.addRow("Thinking Template:", self.thinking_template_preset_combo)
+
         main_layout.addLayout(form_layout)
+
+        prefill_thinking_section = CollapsibleSection("prefill と思考モード")
+        prefill_thinking_group = QGroupBox()
+        prefill_thinking_layout = QVBoxLayout(prefill_thinking_group)
+
+        prefill_thinking_desc = QLabel(
+            "assistant prefill と思考モードが衝突する場合の処理です。"
+            " disabled 以外では通常生成/アイデア生成で二段階生成を行い、"
+            " 1回目の思考抽出に失敗した場合は本番生成を中断します。"
+        )
+        prefill_thinking_desc.setWordWrap(True)
+        prefill_thinking_layout.addWidget(prefill_thinking_desc)
+
+        self.prefill_thinking_strategy_combo = QComboBox()
+        self.prefill_thinking_strategy_combo.addItem("disabled (思考を自動OFF)", "disabled")
+        self.prefill_thinking_strategy_combo.addItem("think_tags (<think>...</think>)", "think_tags")
+        self.prefill_thinking_strategy_combo.addItem("gemma4_channel (<|channel>thought ...)", "gemma4_channel")
+        self.prefill_thinking_strategy_combo.addItem("custom", "custom")
+        strategy_index = self.prefill_thinking_strategy_combo.findData(
+            self.current_settings.get(
+                "prefill_thinking_strategy",
+                DEFAULT_SETTINGS.get("prefill_thinking_strategy", "disabled"),
+            )
+        )
+        if strategy_index != -1:
+            self.prefill_thinking_strategy_combo.setCurrentIndex(strategy_index)
+        prefill_thinking_layout.addWidget(self.prefill_thinking_strategy_combo)
+
+        self.prefill_thinking_custom_prefix_edit = QPlainTextEdit()
+        self.prefill_thinking_custom_prefix_edit.setPlaceholderText("custom prefix")
+        self.prefill_thinking_custom_prefix_edit.setMaximumHeight(70)
+        self.prefill_thinking_custom_prefix_edit.setPlainText(
+            self.current_settings.get(
+                "prefill_thinking_custom_prefix",
+                DEFAULT_SETTINGS.get("prefill_thinking_custom_prefix", ""),
+            )
+        )
+        prefill_thinking_layout.addWidget(QLabel("Custom Prefix:"))
+        prefill_thinking_layout.addWidget(self.prefill_thinking_custom_prefix_edit)
+
+        self.prefill_thinking_custom_suffix_edit = QPlainTextEdit()
+        self.prefill_thinking_custom_suffix_edit.setPlaceholderText("custom suffix")
+        self.prefill_thinking_custom_suffix_edit.setMaximumHeight(70)
+        self.prefill_thinking_custom_suffix_edit.setPlainText(
+            self.current_settings.get(
+                "prefill_thinking_custom_suffix",
+                DEFAULT_SETTINGS.get("prefill_thinking_custom_suffix", ""),
+            )
+        )
+        prefill_thinking_layout.addWidget(QLabel("Custom Suffix:"))
+        prefill_thinking_layout.addWidget(self.prefill_thinking_custom_suffix_edit)
+
+        prefill_thinking_section.addWidget(prefill_thinking_group)
+        main_layout.addWidget(prefill_thinking_section)
 
         # 本文圧縮モード設定 - CollapsibleSectionで囲む
         compression_section = CollapsibleSection("最大コンテキスト超過時の処理")
@@ -381,6 +448,10 @@ class GenerationParamsDialog(QDialog):
         self.transfer_next_always_radio.toggled.connect(self._update_newline_spinbox_state)
         self.transfer_next_eol_radio.toggled.connect(self._update_newline_spinbox_state)
         self._update_newline_spinbox_state() # Set initial state
+        self.prefill_thinking_strategy_combo.currentIndexChanged.connect(self._update_prefill_thinking_custom_state)
+        self.thinking_template_preset_combo.currentIndexChanged.connect(self._sync_prefill_thinking_strategy_to_template)
+        self._update_prefill_thinking_custom_state()
+        self._sync_prefill_thinking_strategy_to_template()
 
         # --- Author's Note Display Mode Setting ---
         authors_note_group = QGroupBox("プロンプトフォーマット")
@@ -401,6 +472,7 @@ class GenerationParamsDialog(QDialog):
 
         # 折りたたみセクションを初期状態で閉じる
         compression_section.toggle_button.setChecked(False)
+        prefill_thinking_section.toggle_button.setChecked(False)
         gen_control_section.toggle_button.setChecked(False)
         cont_order_section.toggle_button.setChecked(False)
         inf_gen_section.toggle_button.setChecked(False)
@@ -460,6 +532,10 @@ class GenerationParamsDialog(QDialog):
         self.current_settings["default_rating"] = self.rating_combo.currentData()
         self.current_settings["prompt_delivery_mode"] = self.prompt_delivery_combo.currentData()
         self.current_settings["system_prompt"] = self.system_prompt_edit.toPlainText()
+        self.current_settings["thinking_template_preset"] = self.thinking_template_preset_combo.currentData()
+        self.current_settings["prefill_thinking_strategy"] = self.prefill_thinking_strategy_combo.currentData()
+        self.current_settings["prefill_thinking_custom_prefix"] = self.prefill_thinking_custom_prefix_edit.toPlainText()
+        self.current_settings["prefill_thinking_custom_suffix"] = self.prefill_thinking_custom_suffix_edit.toPlainText()
 
         # Save Author's Note Display Mode setting
         self.current_settings["authors_note_display_mode"] = self.authors_note_combo.currentData()
@@ -472,6 +548,29 @@ class GenerationParamsDialog(QDialog):
         """Enables or disables the newline spinbox based on the selected transfer mode."""
         enable = self.transfer_next_always_radio.isChecked() or self.transfer_next_eol_radio.isChecked()
         self.transfer_newlines_spinbox.setEnabled(enable)
+
+    @Slot()
+    def _update_prefill_thinking_custom_state(self):
+        use_custom = self.prefill_thinking_strategy_combo.currentData() == "custom"
+        self.prefill_thinking_custom_prefix_edit.setEnabled(use_custom)
+        self.prefill_thinking_custom_suffix_edit.setEnabled(use_custom)
+
+    @Slot()
+    def _sync_prefill_thinking_strategy_to_template(self):
+        preset = self.thinking_template_preset_combo.currentData()
+        if preset == "gemma4":
+            strategy = "gemma4_channel"
+            enabled = False
+        else:
+            strategy = "disabled"
+            enabled = False
+
+        index = self.prefill_thinking_strategy_combo.findData(strategy)
+        if index != -1:
+            self.prefill_thinking_strategy_combo.setCurrentIndex(index)
+        self.prefill_thinking_strategy_combo.setEnabled(enabled)
+        self.prefill_thinking_custom_prefix_edit.setEnabled(False)
+        self.prefill_thinking_custom_suffix_edit.setEnabled(False)
 
     @staticmethod
     def show_dialog(parent: QWidget | None = None) -> bool:

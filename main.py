@@ -5,16 +5,16 @@ import re # Import regex module
 from PySide6.QtWidgets import (QApplication, QMainWindow, QMenuBar, QStatusBar,
                                QSplitter, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout,
                                QTabWidget, QScrollArea, QLineEdit, QPushButton, QMessageBox,
-                               QPlainTextEdit, QToolBar, QDialog, QLineEdit, QLabel, QComboBox, # Add QLabel, QComboBox
+                               QPlainTextEdit, QTextBrowser, QToolBar, QDialog, QLineEdit, QLabel, QComboBox, # Add QLabel, QComboBox
                                QCheckBox, QPlainTextEdit, QSizePolicy) # Ensure QPlainTextEdit is imported, Add QCheckBox, QSizePolicy
 from PySide6.QtCore import Qt, Slot, QTimer, QEvent # Add QEvent
-from PySide6.QtGui import QTextCursor, QAction, QActionGroup, QFont, QKeyEvent # Add QKeyEvent
+from PySide6.QtGui import QTextCursor, QAction, QActionGroup, QFont, QKeyEvent, QPalette, QColor, QTextOption # Add QKeyEvent
 from typing import Dict, Optional, List # Add Optional and List here
 
 # Correctly import custom widgets and other modules
-from src.ui.widgets import CollapsibleSection, TagWidget
+from src.ui.widgets import CollapsibleSection, InlineCollapsibleSection, TagWidget
 from src.ui.dialogs import KoboldConfigDialog, GenerationParamsDialog, ChatTemplateModeStartupDialog
-from src.core.kobold_client import KoboldClient, KoboldClientError
+from src.core.kobold_client import KoboldClient, KoboldClientError, ChatStreamEvent
 from src.core.prompt_builder import (
     build_prompt,
     build_prompt_with_compression,
@@ -29,9 +29,91 @@ from src.ui.syntax_highlighter import DynamicPromptSyntaxHighlighter
 # Import IdeaProcessor and constants
 from src.core.idea_processor import IdeaProcessor, IDEA_ITEM_ORDER, IDEA_ITEM_ORDER_JA, METADATA_MAP
 from src.core.context_utils import count_tokens, get_available_context, get_true_max_context_length # Import for token counting
+from src.core.thinking import (
+    ThinkingRequestPolicy,
+    THINKING_STRATEGY_GEMMA4_CHANNEL,
+    THINKING_TEMPLATE_DISABLED,
+    THINKING_TEMPLATE_GEMMA4,
+    build_thought_block,
+    resolve_thinking_policy,
+)
 
 # Import AutocompleteManager
 from src.core.autocomplete_manager import AutocompleteManager
+
+GEMMA4_THOUGHT_OPEN = "<|channel>thought\n"
+GEMMA4_THOUGHT_EMPTY = "<|channel>thought\n<channel|>"
+
+
+class AutoGrowingTextBrowser(QTextBrowser):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._resize_margin = 10
+        self._resizing = False
+        self._resize_start_y = 0
+        self._initial_height = 0
+        self._base_height = 60
+        self._manual_min_height = 0
+        self.setMinimumHeight(60)
+        self.setReadOnly(True)
+        self.setUndoRedoEnabled(False)
+        self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.textChanged.connect(self._update_height_to_contents)
+        self.document().documentLayout().documentSizeChanged.connect(lambda _size: self._update_height_to_contents())
+
+    def set_base_height(self, height: int):
+        self._base_height = max(self.minimumHeight(), height)
+        self._update_height_to_contents()
+
+    def _update_height_to_contents(self):
+        doc_layout = self.document().documentLayout()
+        doc_height = int(doc_layout.documentSize().height()) if doc_layout is not None else 0
+        if doc_height <= 0:
+            line_height = self.fontMetrics().lineSpacing()
+            doc_height = max(1, self.document().blockCount()) * line_height
+        margins = self.contentsMargins()
+        frame = self.frameWidth() * 2
+        padding = margins.top() + margins.bottom() + 18
+        target_height = max(self._base_height, self._manual_min_height, doc_height + frame + padding)
+        self.setFixedHeight(target_height)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._update_height_to_contents)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and event.position().y() >= self.viewport().height() - self._resize_margin:
+            self._resizing = True
+            self._resize_start_y = int(event.globalPosition().y())
+            self._initial_height = self.height()
+            self.viewport().setCursor(Qt.SizeVerCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._resizing:
+            delta = int(event.globalPosition().y()) - self._resize_start_y
+            self._manual_min_height = max(self.minimumHeight(), self._initial_height + delta)
+            self._update_height_to_contents()
+            event.accept()
+            return
+        if event.position().y() >= self.viewport().height() - self._resize_margin:
+            self.viewport().setCursor(Qt.SizeVerCursor)
+        else:
+            self.viewport().unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._resizing and event.button() == Qt.LeftButton:
+            self._resizing = False
+            self.viewport().unsetCursor()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -48,6 +130,9 @@ class MainWindow(QMainWindow):
         self.current_mode = "generate" # Initial mode: "generate" or "idea"
         self.infinite_generation_prompt = "" # Store prompt for infinite loop
         self.idea_item_key_map = {name_ja: key for key, name_ja in METADATA_MAP.items() if key in IDEA_ITEM_ORDER} # Map JA name to key
+        self._output_block_widgets = []
+        self._last_output_selection = ""
+        self._output_blocks_auto_follow = True
 
         # Instantiate MenuHandler
         self.menu_handler = MenuHandler(self)
@@ -148,7 +233,497 @@ class MainWindow(QMainWindow):
                 stop_sequence=stop_sequence,
                 current_mode=self.current_mode,
             ):
-                yield token
+                yield ChatStreamEvent(content=token)
+
+    def _get_prefill_thinking_strategy(self) -> str:
+        preset = self._get_thinking_template_preset()
+        if preset == THINKING_TEMPLATE_GEMMA4:
+            return THINKING_STRATEGY_GEMMA4_CHANNEL
+        if preset == THINKING_TEMPLATE_DISABLED:
+            return "disabled"
+        settings = load_settings()
+        return settings.get(
+            "prefill_thinking_strategy",
+            DEFAULT_SETTINGS.get("prefill_thinking_strategy", "disabled"),
+        )
+
+    def _get_thinking_template_preset(self) -> str:
+        settings = load_settings()
+        return settings.get(
+            "thinking_template_preset",
+            DEFAULT_SETTINGS.get("thinking_template_preset", "gemma4"),
+        )
+
+    def _split_generic_assistant_prefill(
+        self,
+        messages: Optional[List[Dict[str, str]]],
+        assistant_prefill: Optional[str],
+    ) -> tuple[List[Dict[str, str]], Optional[str]]:
+        effective_messages = [dict(message) for message in (messages or [])]
+        if assistant_prefill:
+            return effective_messages, assistant_prefill
+        if effective_messages and effective_messages[-1].get("role") == "assistant":
+            prefill = effective_messages[-1].get("content") or ""
+            effective_messages = effective_messages[:-1]
+            return effective_messages, (prefill or None)
+        return effective_messages, None
+
+    def _apply_thinking_template_preset(
+        self,
+        *,
+        messages: List[Dict[str, str]],
+        assistant_prefill: Optional[str],
+        policy: ThinkingRequestPolicy,
+    ) -> tuple[List[Dict[str, str]], Optional[str]]:
+        preset = self._get_thinking_template_preset()
+        if preset == THINKING_TEMPLATE_DISABLED:
+            return [dict(message) for message in messages], assistant_prefill
+        if preset != THINKING_TEMPLATE_GEMMA4:
+            return messages, assistant_prefill
+
+        updated_messages = [dict(message) for message in messages]
+        updated_prefill = assistant_prefill or ""
+
+        if policy.effective_enabled:
+            think_prefix = "<|think|>\n"
+            if updated_messages and updated_messages[0].get("role") == "system":
+                content = updated_messages[0].get("content", "")
+                if not content.startswith(think_prefix):
+                    updated_messages[0]["content"] = think_prefix + content
+            else:
+                updated_messages.insert(0, {"role": "system", "content": think_prefix})
+        else:
+            if not updated_prefill.startswith(GEMMA4_THOUGHT_OPEN):
+                updated_prefill = f"{GEMMA4_THOUGHT_EMPTY}{updated_prefill}"
+
+        return updated_messages, updated_prefill or None
+
+    def _resolve_request_thinking_policy(
+        self,
+        *,
+        request_kind: str,
+        has_assistant_prefill: bool,
+    ) -> ThinkingRequestPolicy:
+        policy = resolve_thinking_policy(
+            prompt_delivery_mode=self._get_prompt_delivery_mode(),
+            request_kind=request_kind,
+            checkbox_enabled=self.thinking_mode_checkbox.isChecked(),
+            has_assistant_prefill=has_assistant_prefill,
+            prefill_strategy=self._get_prefill_thinking_strategy(),
+        )
+        if self._get_thinking_template_preset() == THINKING_TEMPLATE_DISABLED:
+            disable_reason = "思考テンプレート設定で『思考を無効化』が選ばれているため、CoT は完全に無効です。"
+            return ThinkingRequestPolicy(
+                requested_by_user=policy.requested_by_user,
+                allowed_by_policy=False,
+                effective_enabled=False,
+                disable_reason=disable_reason,
+                requires_two_pass_prefill=False,
+                encapsulate_thinking=False,
+            )
+        return policy
+
+    def _build_chat_generation_params(self, policy: ThinkingRequestPolicy) -> Dict[str, object]:
+        preset = self._get_thinking_template_preset()
+        params: Dict[str, object] = {}
+        if preset != THINKING_TEMPLATE_GEMMA4:
+            params["chat_template_kwargs"] = {
+                "enable_thinking": bool(policy.effective_enabled)
+            }
+        if policy.encapsulate_thinking:
+            params["encapsulate_thinking"] = True
+        return params
+
+    def _update_thinking_checkbox_ui(self, policy: Optional[ThinkingRequestPolicy] = None):
+        tooltip = "思考モードの希望状態です。実際の有効化は送信方式とリクエスト種別で決まります。"
+        enabled = True
+        autocomplete_active = hasattr(self, "autocomplete_checkbox") and self.autocomplete_checkbox.isChecked()
+        if autocomplete_active:
+            tooltip = "リアルタイムで続きを提案が有効な間は思考モードを使用できません。"
+            enabled = False
+        if policy is not None and policy.disable_reason:
+            tooltip = f"{tooltip}\n現在: {policy.disable_reason}"
+            if not policy.allowed_by_policy:
+                enabled = False
+        elif not autocomplete_active and not self._use_chat_completions_mode():
+            tooltip = "思考モードは汎用モードでのみ使用できます。"
+            enabled = False
+        self.thinking_mode_checkbox.setToolTip(tooltip)
+        self.thinking_mode_checkbox.setEnabled(enabled)
+
+    def _format_output_block_title(
+        self,
+        task_label: str,
+        *,
+        sequence: Optional[int] = None,
+        phase: Optional[str] = None,
+    ) -> str:
+        number = sequence if sequence is not None else self.output_block_counter
+        title = f"{number:03d} | {task_label}"
+        if phase:
+            title = f"{title} | {phase}"
+        return title
+
+    def _get_output_task_label(self) -> str:
+        return "アイデア" if self.current_mode == "idea" else "小説"
+
+    def _refresh_output_block_heights(self, widget: Optional[QWidget]):
+        current = widget
+        while current is not None:
+            if isinstance(current, (CollapsibleSection, InlineCollapsibleSection)):
+                current.refresh_content_height()
+            current = current.parentWidget()
+
+    def _capture_output_selection(self, widget: QWidget):
+        selected = self._selected_text_from_widget(widget)
+        if selected:
+            self._last_output_selection = selected
+
+    def _register_output_selection_tracking(self, widget: QTextBrowser):
+        widget.copyAvailable.connect(lambda available, source=widget: self._capture_output_selection(source) if available else None)
+        widget.selectionChanged.connect(lambda source=widget: self._capture_output_selection(source))
+
+    def _create_output_block(self, title: str, *, include_thinking: bool) -> tuple[QTextBrowser, Optional[QTextBrowser]]:
+        should_follow = self._should_auto_scroll_output_blocks()
+        block_widget = InlineCollapsibleSection(title)
+        block_widget.setObjectName("outputBlock")
+        block_widget.toggle_button.setObjectName("outputBlockTitle")
+        block_layout = block_widget.content_layout
+        block_layout.setContentsMargins(0, 0, 0, 12)
+        block_layout.setSpacing(6)
+
+        thinking_editor: Optional[QTextBrowser] = None
+        if include_thinking:
+            thinking_section = InlineCollapsibleSection("思考")
+            thinking_section.setObjectName("outputBlockThinking")
+            thinking_editor = AutoGrowingTextBrowser()
+            thinking_editor.setPlaceholderText("思考ログ")
+            thinking_editor.setObjectName("outputBlockThinkingEditor")
+            thinking_editor.set_base_height(84)
+            self._register_output_selection_tracking(thinking_editor)
+            thinking_section.addWidget(thinking_editor)
+            thinking_section.set_expanded(False)
+            block_layout.addWidget(thinking_section)
+
+        content_editor = AutoGrowingTextBrowser()
+        content_editor.setPlaceholderText("出力")
+        content_editor.setObjectName("outputBlockContent")
+        content_editor.set_base_height(96)
+        self._register_output_selection_tracking(content_editor)
+        block_layout.addWidget(content_editor)
+
+        insert_index = max(0, self.output_blocks_layout.count() - 1)
+        self.output_blocks_layout.insertWidget(insert_index, block_widget)
+        self._output_block_widgets.append(block_widget)
+        self._apply_output_block_style(block_widget)
+        block_widget.set_expanded(True)
+        block_widget.refresh_content_height()
+        if should_follow:
+            QTimer.singleShot(0, self._scroll_output_blocks_to_bottom)
+        return content_editor, thinking_editor
+
+    def _append_to_block_editor(self, editor: Optional[QTextBrowser], text: str):
+        if editor is None or not text:
+            return
+        should_follow = self._should_auto_scroll_output_blocks()
+        cursor = editor.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertText(text)
+        editor.setTextCursor(cursor)
+        self._refresh_output_block_heights(editor)
+        if should_follow:
+            QTimer.singleShot(0, self._scroll_output_blocks_to_bottom)
+
+    def _clear_thinking_output(self):
+        while self.output_blocks_layout.count() > 1:
+            item = self.output_blocks_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._output_block_widgets.clear()
+
+    def _should_auto_scroll_output_blocks(self) -> bool:
+        return bool(getattr(self, "_output_blocks_auto_follow", False))
+
+    def _scroll_output_blocks_to_bottom(self):
+        if not hasattr(self, "output_blocks_scroll"):
+            return
+        v_bar = self.output_blocks_scroll.verticalScrollBar()
+        v_bar.setValue(v_bar.maximum())
+
+    def _update_output_blocks_auto_follow(self):
+        if not hasattr(self, "output_blocks_scroll"):
+            self._output_blocks_auto_follow = False
+            return
+        v_bar = self.output_blocks_scroll.verticalScrollBar()
+        self._output_blocks_auto_follow = v_bar.value() >= v_bar.maximum() - 12
+
+    def _on_output_blocks_scroll_changed(self, *_args):
+        self._update_output_blocks_auto_follow()
+
+    def _on_output_blocks_range_changed(self, *_args):
+        if self._should_auto_scroll_output_blocks():
+            QTimer.singleShot(0, self._scroll_output_blocks_to_bottom)
+            QTimer.singleShot(16, self._scroll_output_blocks_to_bottom)
+
+    def _apply_output_block_style(self, block_widget: Optional[QWidget] = None):
+        blocks = [block_widget] if block_widget is not None else list(self._output_block_widgets)
+        palette = QApplication.palette()
+        window = palette.color(QPalette.Window)
+        base = palette.color(QPalette.Base)
+        button = palette.color(QPalette.Button)
+        text = palette.color(QPalette.Text)
+        mid = palette.color(QPalette.Mid)
+
+        def soften(color: QColor, amount: int, lighter: bool) -> str:
+            tuned = color.lighter(amount) if lighter else color.darker(amount)
+            return tuned.name()
+
+        dark_ui = window.lightness() < 128
+        block_bg = soften(window, 106 if dark_ui else 102, lighter=not dark_ui)
+        title_bg = soften(button, 112 if dark_ui else 103, lighter=not dark_ui)
+        editor_bg = soften(base, 103 if dark_ui else 100, lighter=not dark_ui)
+        border = soften(mid, 125 if dark_ui else 110, lighter=not dark_ui)
+        muted_text = text.name()
+
+        block_style = (
+            "QWidget#outputBlock {"
+            f" background-color: {block_bg};"
+            f" border: 1px solid {border};"
+            " border-radius: 8px;"
+            " padding: 6px;"
+            " margin-top: 4px;"
+            "}"
+            "QToolButton#outputBlockTitle {"
+            f" background-color: {title_bg};"
+            f" color: {muted_text};"
+            f" border: 1px solid {border};"
+            " border-radius: 6px;"
+            " padding: 7px 10px;"
+            " font-weight: 600;"
+            " text-align: left;"
+            "}"
+            "QTextBrowser#outputBlockContent, QTextBrowser#outputBlockThinkingEditor {"
+            f" background-color: {editor_bg};"
+            f" color: {muted_text};"
+            f" border: 1px solid {border};"
+            " border-radius: 6px;"
+            " padding: 8px;"
+            " selection-background-color: palette(highlight);"
+            "}"
+        )
+        for widget in blocks:
+            if widget is not None:
+                widget.setStyleSheet(block_style)
+
+    def _find_text_selection_source(self, widget: Optional[QWidget]) -> Optional[QWidget]:
+        current = widget
+        while current is not None:
+            if isinstance(current, (QTextBrowser, QPlainTextEdit)):
+                return current
+            current = current.parentWidget()
+        return None
+
+    def _selected_text_from_widget(self, widget: Optional[QWidget]) -> str:
+        text_widget = self._find_text_selection_source(widget)
+        if text_widget is None:
+            return ""
+        selected = text_widget.textCursor().selectedText()
+        if not selected:
+            return ""
+        return selected.replace("\u2029", "\n")
+
+    def _get_selected_output_text(self) -> str:
+        selected = self._selected_text_from_widget(QApplication.focusWidget())
+        if selected:
+            self._last_output_selection = selected
+            return selected
+        if self._last_output_selection:
+            return self._last_output_selection
+        return self.output_text_edit.textCursor().selectedText().replace("\u2029", "\n")
+
+    async def _run_two_pass_prefill_reasoning(
+        self,
+        *,
+        request_kind: str,
+        base_messages: List[Dict[str, str]],
+        assistant_prefill: str,
+        max_length: int,
+        stop_sequence: Optional[List[str]],
+        reasoning_editor: Optional[QTextBrowser],
+    ) -> str:
+        first_pass_messages = [dict(message) for message in base_messages]
+        promoted_prefill = assistant_prefill.strip()
+        if first_pass_messages and first_pass_messages[-1].get("role") == "user":
+            existing_content = first_pass_messages[-1].get("content", "")
+            separator = "" if not existing_content or existing_content.endswith(("\n", "\r")) else "\n"
+            first_pass_messages[-1]["content"] = f"{existing_content}{separator}{promoted_prefill}"
+        elif first_pass_messages:
+            first_pass_messages.append({"role": "user", "content": promoted_prefill})
+        else:
+            first_pass_messages.append({"role": "user", "content": promoted_prefill})
+
+        policy = self._resolve_request_thinking_policy(
+            request_kind=request_kind,
+            has_assistant_prefill=False,
+        )
+        generation_params = self._build_chat_generation_params(policy)
+        first_pass_stop_sequence = list(stop_sequence or [])
+        if self._get_thinking_template_preset() == THINKING_TEMPLATE_GEMMA4:
+            if "<channel|>" not in first_pass_stop_sequence:
+                first_pass_stop_sequence.append("<channel|>")
+        reasoning_text = ""
+        async for event in self._stream_generation_request(
+            messages=first_pass_messages,
+            assistant_prefill=None,
+            max_length=max_length,
+            stop_sequence=first_pass_stop_sequence or None,
+            generation_params=generation_params,
+        ):
+            if event.reasoning_content:
+                reasoning_text += event.reasoning_content
+                self._append_to_block_editor(reasoning_editor, event.reasoning_content)
+
+        if not reasoning_text.strip():
+            raise KoboldClientError("二段階生成の1回目で reasoning_content を取得できませんでした。")
+        return reasoning_text
+
+    async def _prepare_chat_request_with_thinking(
+        self,
+        *,
+        request_kind: str,
+        messages: Optional[List[Dict[str, str]]],
+        assistant_prefill: Optional[str],
+        max_length: int,
+        stop_sequence: Optional[List[str]],
+        reasoning_editor: Optional[QTextBrowser],
+    ) -> tuple[List[Dict[str, str]], Optional[str], ThinkingRequestPolicy, Dict[str, object]]:
+        base_messages, extracted_prefill = self._split_generic_assistant_prefill(messages, assistant_prefill)
+        policy = self._resolve_request_thinking_policy(
+            request_kind=request_kind,
+            has_assistant_prefill=bool(extracted_prefill),
+        )
+        self._update_thinking_checkbox_ui(policy)
+        if policy.disable_reason and policy.requested_by_user:
+            self.status_bar.showMessage(policy.disable_reason, 4000)
+
+        final_prefill = extracted_prefill
+        if policy.requires_two_pass_prefill and extracted_prefill:
+            settings = load_settings()
+            strategy = settings.get("prefill_thinking_strategy", "disabled")
+            if self._get_thinking_template_preset() == THINKING_TEMPLATE_GEMMA4:
+                strategy = THINKING_STRATEGY_GEMMA4_CHANNEL
+            reasoning_text = await self._run_two_pass_prefill_reasoning(
+                request_kind=request_kind,
+                base_messages=base_messages,
+                assistant_prefill=extracted_prefill,
+                max_length=max_length,
+                stop_sequence=stop_sequence,
+                reasoning_editor=reasoning_editor,
+            )
+            thought_block = build_thought_block(
+                reasoning_text,
+                strategy=strategy,
+                custom_prefix=settings.get("prefill_thinking_custom_prefix", ""),
+                custom_suffix=settings.get("prefill_thinking_custom_suffix", ""),
+            )
+            final_prefill = f"{thought_block}{extracted_prefill}"
+            policy = ThinkingRequestPolicy(
+                requested_by_user=policy.requested_by_user,
+                allowed_by_policy=policy.allowed_by_policy,
+                effective_enabled=False,
+                disable_reason=policy.disable_reason,
+                requires_two_pass_prefill=False,
+                encapsulate_thinking=False,
+            )
+
+        params = self._build_chat_generation_params(policy)
+        final_messages, final_prefill = self._apply_thinking_template_preset(
+            messages=base_messages,
+            assistant_prefill=final_prefill,
+            policy=policy,
+        )
+        return final_messages, final_prefill, policy, params
+
+    async def _stream_to_output(
+        self,
+        *,
+        prompt: Optional[str],
+        messages: Optional[List[Dict[str, str]]],
+        assistant_prefill: Optional[str],
+        max_length: int,
+        stop_sequence: Optional[List[str]],
+        generation_params: Optional[Dict[str, object]],
+        section_title: str,
+        append_output: bool = True,
+    ) -> tuple[str, str, Optional[QTextBrowser]]:
+        block_editor: Optional[QTextBrowser] = None
+        thinking_editor: Optional[QTextBrowser] = None
+        content_text = ""
+        reasoning_text = ""
+        block_sequence = self.output_block_counter
+        block_title = self._format_output_block_title(
+            self._get_output_task_label(),
+            sequence=block_sequence,
+        )
+
+        if self._use_chat_completions_mode():
+            base_messages, extracted_prefill = self._split_generic_assistant_prefill(messages, assistant_prefill)
+            initial_policy = self._resolve_request_thinking_policy(
+                request_kind=self.current_mode,
+                has_assistant_prefill=bool(extracted_prefill),
+            )
+            block_editor, thinking_editor = self._create_output_block(
+                block_title,
+                include_thinking=initial_policy.effective_enabled or initial_policy.requires_two_pass_prefill,
+            )
+            self.output_block_counter += 1
+            prepared_messages, prepared_prefill, policy, prepared_params = await self._prepare_chat_request_with_thinking(
+                request_kind=self.current_mode,
+                messages=messages,
+                assistant_prefill=assistant_prefill,
+                max_length=max_length,
+                stop_sequence=stop_sequence,
+                reasoning_editor=thinking_editor,
+            )
+            messages = prepared_messages
+            assistant_prefill = prepared_prefill
+            generation_params = prepared_params
+        else:
+            self._update_thinking_checkbox_ui(
+                self._resolve_request_thinking_policy(
+                    request_kind=self.current_mode,
+                    has_assistant_prefill=bool(assistant_prefill),
+                )
+            )
+            block_editor, _ = self._create_output_block(
+                block_title,
+                include_thinking=False,
+            )
+            self.output_block_counter += 1
+
+        async for event in self._stream_generation_request(
+            prompt=prompt,
+            messages=messages,
+            assistant_prefill=assistant_prefill,
+            max_length=max_length,
+            stop_sequence=stop_sequence,
+            generation_params=generation_params,
+        ):
+            if event.content:
+                content_text += event.content
+                if append_output:
+                    self._append_to_output(event.content)
+                    self._append_to_block_editor(block_editor, event.content)
+            if event.reasoning_content:
+                reasoning_text += event.reasoning_content
+                self._append_to_block_editor(thinking_editor, event.reasoning_content)
+            await asyncio.sleep(0.001)
+
+        if self._use_chat_completions_mode() and generation_params and generation_params.get("encapsulate_thinking") and not reasoning_text.strip():
+            raise KoboldClientError("thinking を有効化しましたが reasoning_content を取得できませんでした。")
+
+        return content_text, reasoning_text, block_editor
 
     def _create_menu_bar(self):
         """Creates the menu bar using MenuHandler."""
@@ -167,6 +742,7 @@ class MainWindow(QMainWindow):
             self.kobold_client.reload_settings()
             if hasattr(self, "autocomplete_manager"):
                 self.autocomplete_manager.reload_settings()
+            self._update_thinking_checkbox_ui()
             self.status_bar.showMessage("チャットテンプレモードを更新しました。", 3000)
 
     def _create_toolbar(self):
@@ -203,7 +779,9 @@ class MainWindow(QMainWindow):
         self.thinking_mode_checkbox = QCheckBox("思考モード(対応モデルのみ)")
         self.thinking_mode_checkbox.setChecked(False)
         self.thinking_mode_checkbox.setFocusPolicy(Qt.NoFocus)
+        self.thinking_mode_checkbox.toggled.connect(self._update_idea_fast_mode_state)
         toolbar.addWidget(self.thinking_mode_checkbox)
+        self._update_thinking_checkbox_ui()
         
         # スペーサーを追加して右端にショートカット説明を配置
         spacer = QWidget()
@@ -250,11 +828,26 @@ class MainWindow(QMainWindow):
         self.output_text_edit = QPlainTextEdit()
         self.output_text_edit.setReadOnly(True)
         self.output_text_edit.setPlaceholderText("LLMからの出力がここに表示されます...")
-        output_layout.addWidget(self.output_text_edit)
+        self.output_text_edit.hide()
+        self.output_blocks_scroll = QScrollArea()
+        self.output_blocks_scroll.setWidgetResizable(True)
+        self.output_blocks_widget = QWidget()
+        self.output_blocks_layout = QVBoxLayout(self.output_blocks_widget)
+        self.output_blocks_layout.setContentsMargins(0, 0, 0, 0)
+        self.output_blocks_layout.addStretch()
+        self.output_blocks_scroll.setWidget(self.output_blocks_widget)
+        output_scroll_bar = self.output_blocks_scroll.verticalScrollBar()
+        output_scroll_bar.valueChanged.connect(self._on_output_blocks_scroll_changed)
+        output_scroll_bar.rangeChanged.connect(self._on_output_blocks_range_changed)
+        output_layout.addWidget(self.output_blocks_scroll)
+        self._update_output_blocks_auto_follow()
         output_button_layout = QHBoxLayout()
         output_clear_button = QPushButton("[ 出力物クリア ]")
         output_to_main_button = QPushButton("[ 選択部分を本文へ転記 ]")
         output_to_memo_button = QPushButton("[ 選択部分をメモへ転記 ]")
+        output_clear_button.setFocusPolicy(Qt.NoFocus)
+        output_to_main_button.setFocusPolicy(Qt.NoFocus)
+        output_to_memo_button.setFocusPolicy(Qt.NoFocus)
         output_clear_button.clicked.connect(self._clear_output_edit)
         output_to_main_button.clicked.connect(self._transfer_output_to_main)
         output_to_memo_button.clicked.connect(self._transfer_output_to_memo)
@@ -306,6 +899,7 @@ class MainWindow(QMainWindow):
     def _on_theme_changed(self, theme_name: str):
         for highlighter in getattr(self, "_syntax_highlighters", []):
             highlighter.update_theme()
+        self._apply_output_block_style()
 
     def _create_details_tab(self):
         self.details_tab_widget = QWidget()
@@ -379,6 +973,7 @@ class MainWindow(QMainWindow):
         title_layout = QHBoxLayout()
         self.title_edit = QLineEdit()
         self.title_transfer_button = QPushButton("← 転記")
+        self.title_transfer_button.setFocusPolicy(Qt.NoFocus)
         self.title_transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("title"))
         title_layout.addWidget(self.title_edit)
         title_layout.addWidget(self.title_transfer_button)
@@ -389,6 +984,7 @@ class MainWindow(QMainWindow):
         keywords_section = CollapsibleSection("キーワード")
         self.keywords_widget = TagWidget()
         self.keywords_widget.transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("keywords"))
+        self.keywords_widget.transfer_button.setFocusPolicy(Qt.NoFocus)
         keywords_section.addWidget(self.keywords_widget)
         details_layout.addWidget(keywords_section)
 
@@ -396,6 +992,7 @@ class MainWindow(QMainWindow):
         genre_section = CollapsibleSection("ジャンル")
         self.genre_widget = TagWidget()
         self.genre_widget.transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("genres"))
+        self.genre_widget.transfer_button.setFocusPolicy(Qt.NoFocus)
         genre_section.addWidget(self.genre_widget)
         details_layout.addWidget(genre_section)
 
@@ -405,6 +1002,7 @@ class MainWindow(QMainWindow):
         self.synopsis_edit = QPlainTextEdit()
         self.synopsis_edit.setPlaceholderText("小説のあらすじを入力...")
         self.synopsis_transfer_button = QPushButton("← 転記")
+        self.synopsis_transfer_button.setFocusPolicy(Qt.NoFocus)
         self.synopsis_transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("synopsis"))
         synopsis_layout.addWidget(self.synopsis_edit)
         synopsis_layout.addWidget(self.synopsis_transfer_button, 0, Qt.AlignTop)
@@ -417,6 +1015,7 @@ class MainWindow(QMainWindow):
         self.setting_edit = QPlainTextEdit()
         self.setting_edit.setPlaceholderText("世界観、キャラクター設定などを入力...")
         self.setting_transfer_button = QPushButton("← 転記")
+        self.setting_transfer_button.setFocusPolicy(Qt.NoFocus)
         self.setting_transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("setting"))
         setting_layout.addWidget(self.setting_edit)
         setting_layout.addWidget(self.setting_transfer_button, 0, Qt.AlignTop)
@@ -429,6 +1028,7 @@ class MainWindow(QMainWindow):
         self.plot_edit = QPlainTextEdit()
         self.plot_edit.setPlaceholderText("物語の展開、構成などを入力...")
         self.plot_transfer_button = QPushButton("← 転記")
+        self.plot_transfer_button.setFocusPolicy(Qt.NoFocus)
         self.plot_transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("plot"))
         plot_layout.addWidget(self.plot_edit)
         plot_layout.addWidget(self.plot_transfer_button, 0, Qt.AlignTop)
@@ -491,6 +1091,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("生成パラメータが更新されました。", 3000)
             self.kobold_client.reload_settings()
             self.autocomplete_manager.reload_settings()  # オートコンプリート設定も再読み込み
+            self._update_thinking_checkbox_ui()
         else:
             self.status_bar.showMessage("生成パラメータの変更はキャンセルされました。", 3000)
 
@@ -521,6 +1122,8 @@ class MainWindow(QMainWindow):
             selected_item_index = self.idea_item_combo.currentIndex()
             selected_item_key = self.idea_item_combo.itemData(selected_item_index) # Get internal key ('all', 'title', etc.)
             fast_mode_enabled = self.idea_fast_mode_check.isChecked()
+            if self.thinking_mode_checkbox.isChecked():
+                fast_mode_enabled = False
             ui_inputs = self._get_metadata_from_ui()["metadata"] # Get only metadata part
 
             processor = IdeaProcessor(ui_inputs)
@@ -829,15 +1432,6 @@ class MainWindow(QMainWindow):
         """
         task_name = "アイデア生成 (高速)" if self.current_mode == "idea" else "単発生成"
         try:
-            ui_data = self._get_metadata_from_ui()
-            generation_params = None
-            if self._use_chat_completions_mode():
-                generation_params = {
-                    "chat_template_kwargs": {
-                        "enable_thinking": bool(ui_data.get("enable_thinking", False))
-                    }
-                }
-
             # Get mode-specific max_length
             settings = load_settings()
             if self.current_mode == "idea":
@@ -845,19 +1439,16 @@ class MainWindow(QMainWindow):
             else: # generate mode
                 current_max_length = settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
 
-            async for token in self._stream_generation_request(
+            await self._stream_to_output(
                 prompt=prompt,
                 messages=messages,
                 assistant_prefill=assistant_prefill,
                 max_length=current_max_length,
                 stop_sequence=stop_sequence,
-                generation_params=generation_params,
-            ):
-                self._append_to_output(token)
-                await asyncio.sleep(0.001) # Yield control briefly
+                generation_params=None,
+                section_title=task_name,
+            )
 
-            # Finished successfully
-            self.output_block_counter += 1
             self.status_bar.showMessage(f"{task_name} 完了", 3000)
 
         except KoboldClientError as e:
@@ -892,32 +1483,21 @@ class MainWindow(QMainWindow):
         Runs generation for IDEA Safe mode: gets full output, filters, then displays.
         """
         task_name = "アイデア生成 (安全)"
-        full_output = ""
         try:
-            ui_data = self._get_metadata_from_ui()
-            generation_params = None
-            if self._use_chat_completions_mode():
-                generation_params = {
-                    "chat_template_kwargs": {
-                        "enable_thinking": bool(ui_data.get("enable_thinking", False))
-                    }
-                }
-
             # Get mode-specific max_length
             settings = load_settings()
             current_max_length = settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
 
-            async for token in self._stream_generation_request(
+            full_output, _, block_editor = await self._stream_to_output(
                 prompt=prompt,
                 messages=messages,
                 assistant_prefill=assistant_prefill,
                 max_length=current_max_length,
                 stop_sequence=stop_sequence,
-                generation_params=generation_params,
-            ):
-                full_output += token
-                # Optional: Add a small sleep if needed, but not strictly necessary here
-                # await asyncio.sleep(0.001)
+                generation_params=None,
+                section_title=task_name,
+                append_output=False,
+            )
 
             # Filter the output
             ui_inputs = self._get_metadata_from_ui()["metadata"] # Get current inputs for processor context
@@ -927,6 +1507,7 @@ class MainWindow(QMainWindow):
             # Display filtered output (replace existing content in output area)
             # self._append_to_output(filtered_output) # Append might be confusing, let's replace
             self.output_text_edit.appendPlainText(filtered_output) # Append after the separator
+            self._append_to_block_editor(block_editor, filtered_output)
             cursor = self.output_text_edit.textCursor()
             cursor.movePosition(QTextCursor.End)
             self.output_text_edit.setTextCursor(cursor)
@@ -985,6 +1566,8 @@ class MainWindow(QMainWindow):
                 selected_item_index = self.idea_item_combo.currentIndex()
                 selected_item_key = self.idea_item_combo.itemData(selected_item_index)
                 fast_mode_enabled = self.idea_fast_mode_check.isChecked()
+                if self.thinking_mode_checkbox.isChecked():
+                    fast_mode_enabled = False
                 ui_inputs = self._get_metadata_from_ui()["metadata"]
                 full_ui_data = self._get_metadata_from_ui() # For build_prompt
 
@@ -1173,14 +1756,6 @@ class MainWindow(QMainWindow):
         # --- Main Generation Loop ---
         try:
             while self.generation_status == "infinite_running":
-                current_ui_data = self._get_metadata_from_ui()
-                generation_params = None
-                if self._use_chat_completions_mode():
-                    generation_params = {
-                        "chat_template_kwargs": {
-                            "enable_thinking": bool(current_ui_data.get("enable_thinking", False))
-                        }
-                    }
                 # --- Re-prepare parameters if behavior is 'immediate' ---
                 if update_behavior == "immediate":
                     if self.current_mode == "idea":
@@ -1217,40 +1792,34 @@ class MainWindow(QMainWindow):
                         if selected_item_key == "all":
                             # --- "All" Item: Always Stream ---
                             self._append_to_output(separator)
-                            async for token in self._stream_generation_request(
+                            await self._stream_to_output(
                                 prompt=final_prompt,
                                 messages=final_messages,
                                 assistant_prefill=final_assistant_prefill,
                                 max_length=current_max_length,
                                 stop_sequence=stop_sequence,
-                                generation_params=generation_params,
-                            ):
-                                if self.generation_status != "infinite_running":
-                                    raise asyncio.CancelledError("Infinite generation stopped during stream.")
-                                self._append_to_output(token)
-                                await asyncio.sleep(0.001)
+                                generation_params=None,
+                                section_title=f"無限生成 / {current_item_text_for_separator}",
+                            )
                             generation_successful = True
                         elif not fast_mode_enabled:
                             # --- Safe Mode (Collect, Filter, Append) ---
-                            full_output = ""
-                            async for token in self._stream_generation_request(
+                            full_output, _, block_editor = await self._stream_to_output(
                                 prompt=final_prompt,
                                 messages=final_messages,
                                 assistant_prefill=final_assistant_prefill,
                                 max_length=current_max_length,
                                 stop_sequence=stop_sequence,
-                                generation_params=generation_params,
-                            ):
-                                if self.generation_status != "infinite_running":
-                                    raise asyncio.CancelledError("Infinite generation stopped during stream.")
-                                full_output += token
-                                # No UI update during collection, maybe a small sleep
-                                await asyncio.sleep(0.001)
+                                generation_params=None,
+                                section_title=f"無限生成 / {current_item_text_for_separator}",
+                                append_output=False,
+                            )
 
                             if processor: # Ensure processor exists
                                 filtered_output = processor.filter_output(full_output, selected_item_key)
                                 # Append separator and filtered output directly
                                 self.output_text_edit.appendPlainText(separator + filtered_output)
+                                self._append_to_block_editor(block_editor, filtered_output)
                                 cursor = self.output_text_edit.textCursor()
                                 cursor.movePosition(QTextCursor.End)
                                 self.output_text_edit.setTextCursor(cursor)
@@ -1262,40 +1831,32 @@ class MainWindow(QMainWindow):
                         else:
                             # --- Fast Mode (Stream directly) ---
                             self._append_to_output(separator)
-                            async for token in self._stream_generation_request(
+                            await self._stream_to_output(
                                 prompt=final_prompt,
                                 messages=final_messages,
                                 assistant_prefill=final_assistant_prefill,
                                 max_length=current_max_length,
                                 stop_sequence=stop_sequence,
-                                generation_params=generation_params,
-                            ):
-                                if self.generation_status != "infinite_running":
-                                    raise asyncio.CancelledError("Infinite generation stopped during stream.")
-                                self._append_to_output(token)
-                                await asyncio.sleep(0.001)
+                                generation_params=None,
+                                section_title=f"無限生成 / {current_item_text_for_separator}",
+                            )
                             generation_successful = True
 
                     else:
                         # --- Generate Mode Execution (Stream directly) ---
                         self._append_to_output(separator)
-                        async for token in self._stream_generation_request(
+                        await self._stream_to_output(
                             prompt=final_prompt,
                             messages=final_messages,
                             assistant_prefill=final_assistant_prefill,
                             max_length=current_max_length,
                             stop_sequence=stop_sequence,
-                            generation_params=generation_params,
-                        ):
-                            if self.generation_status != "infinite_running":
-                                raise asyncio.CancelledError("Infinite generation stopped during stream.")
-                            self._append_to_output(token)
-                            await asyncio.sleep(0.001)
+                            generation_params=None,
+                            section_title="無限生成",
+                        )
                         generation_successful = True
 
                     # --- Post-generation ---
-                    if generation_successful:
-                        self.output_block_counter += 1
                     await asyncio.sleep(0.5) # Wait before next generation
 
                 except KoboldClientError as e:
@@ -1388,13 +1949,15 @@ class MainWindow(QMainWindow):
     def _clear_output_edit(self):
         """Clears the output text edit and resets the block counter."""
         self.output_text_edit.clear()
+        self._clear_thinking_output()
+        self._last_output_selection = ""
         self.output_block_counter = 1
         self.status_bar.showMessage("出力エリアをクリアしました。", 2000)
 
     @Slot()
     def _transfer_output_to_main(self):
         """Transfers selected text from output area to main text area based on settings."""
-        selected_text = self.output_text_edit.textCursor().selectedText()
+        selected_text = self._get_selected_output_text()
         if not selected_text:
             self.status_bar.showMessage("出力エリアでテキストが選択されていません。", 2000)
             return
@@ -1428,7 +1991,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _transfer_output_to_memo(self): # Renamed from _transfer_main_to_memo
         """Transfers selected text from output area to memo area."""
-        selected_text = self.output_text_edit.textCursor().selectedText() # Source is output_text_edit
+        selected_text = self._get_selected_output_text()
         if selected_text:
             self.memo_edit.appendPlainText(selected_text) # Append to memo
             self.status_bar.showMessage("選択範囲をメモエリアに転記しました。", 2000)
@@ -1441,7 +2004,7 @@ class MainWindow(QMainWindow):
         Parses selected text in the output area and transfers the value
         corresponding to the metadata_key to the appropriate details widget.
         """
-        selected_text = self.output_text_edit.textCursor().selectedText()
+        selected_text = self._get_selected_output_text()
         if not selected_text:
             self.status_bar.showMessage("出力エリアで転記したいテキストを選択してください。", 3000)
             return
@@ -1536,6 +2099,7 @@ class MainWindow(QMainWindow):
         # ショートカット表示を更新
         self._update_shortcut_display()
         self._schedule_token_update()
+        self._update_thinking_checkbox_ui()
 
     @Slot()
     def _set_mode_idea(self):
@@ -1559,6 +2123,7 @@ class MainWindow(QMainWindow):
             # ショートカット表示を更新
             self._update_shortcut_display()
             self._schedule_token_update()
+            self._update_thinking_checkbox_ui()
 
     @Slot()
     def _toggle_autocomplete_mode(self, checked):
@@ -1582,6 +2147,7 @@ class MainWindow(QMainWindow):
         
         # ショートカット表示を更新
         self._update_shortcut_display()
+        self._update_thinking_checkbox_ui()
 
     @Slot()
     def _update_idea_fast_mode_state(self):
@@ -1591,9 +2157,10 @@ class MainWindow(QMainWindow):
 
         selected_item_index = self.idea_item_combo.currentIndex()
         selected_item_key = self.idea_item_combo.itemData(selected_item_index)
+        thinking_requested = self.thinking_mode_checkbox.isChecked()
 
-        # Disable fast mode for "全部" or the first item ("タイトル")
-        if selected_item_key == 'all' or selected_item_key == IDEA_ITEM_ORDER[0]:
+        # Disable fast mode for "全部", the first item ("タイトル"), or whenever thinking mode is requested.
+        if selected_item_key == 'all' or selected_item_key == IDEA_ITEM_ORDER[0] or thinking_requested:
             self.idea_fast_mode_check.setEnabled(False)
             self.idea_fast_mode_check.setChecked(False) # Uncheck when disabled
         else:

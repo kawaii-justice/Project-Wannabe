@@ -178,12 +178,7 @@ class AutocompleteManager(QObject):
             ui_data = main_window._get_metadata_from_ui()
             use_chat_mode = getattr(main_window, "_use_chat_completions_mode", lambda: False)()
             generation_params = None
-            if use_chat_mode:
-                generation_params = {
-                    "chat_template_kwargs": {
-                        "enable_thinking": bool(ui_data.get("enable_thinking", False))
-                    }
-                }
+            assistant_prefill = None
 
             if use_chat_mode:
                 prompt = None
@@ -195,6 +190,22 @@ class AutocompleteManager(QObject):
                     compression_mode=self.settings.get("compression_mode", "token_dynamic"),
                     max_length_generate=self.max_length
                 )
+                thinking_preset = self.settings.get("thinking_template_preset", DEFAULT_SETTINGS.get("thinking_template_preset", "gemma4"))
+                if thinking_preset == "gemma4":
+                    existing_prefill = ""
+                    if messages and messages[-1].get("role") == "assistant":
+                        existing_prefill = messages[-1].get("content", "")
+                    assistant_prefill = f"<|channel>thought\n<channel|>{existing_prefill}"
+                    generation_params = {
+                        "encapsulate_thinking": False,
+                    }
+                else:
+                    generation_params = {
+                        "chat_template_kwargs": {
+                            "enable_thinking": False
+                        },
+                        "encapsulate_thinking": False,
+                    }
             else:
                 messages = None
                 prompt, total_tokens, is_overflow, original_body_chars, compressed_body_chars = await build_prompt_with_compression(
@@ -241,12 +252,13 @@ class AutocompleteManager(QObject):
             if use_chat_mode:
                 async for token in self.kobold_client.generate_chat_stream(
                     messages or [],
+                    assistant_prefill=assistant_prefill,
                     max_length=self.max_length,
                     stop_sequence=["\n"] if ban_newlines else None,
                     current_mode="autocomplete",
                     generation_params=generation_params,
                 ):
-                    generated_text += token
+                    generated_text += token.content
             else:
                 async for token in self.kobold_client.generate_stream(
                     prompt,
