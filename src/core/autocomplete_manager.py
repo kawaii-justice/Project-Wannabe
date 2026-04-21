@@ -6,7 +6,11 @@ from PySide6.QtWidgets import QPlainTextEdit, QApplication
 
 from src.core.kobold_client import KoboldClient, KoboldClientError
 from src.core.settings import load_settings, DEFAULT_SETTINGS
-from src.core.prompt_builder import build_prompt, build_prompt_with_compression
+from src.core.prompt_builder import (
+    build_prompt,
+    build_prompt_with_compression,
+    build_chat_messages_with_compression,
+)
 from src.core.dynamic_prompts import evaluate_dynamic_prompt, is_position_valid
 
 
@@ -172,16 +176,35 @@ class AutocompleteManager(QObject):
                 return
             
             ui_data = main_window._get_metadata_from_ui()
-            
-            # build_prompt_with_compressionを使用してプロンプトを構築（動的圧縮対応）
-            prompt, total_tokens, is_overflow, original_body_chars, compressed_body_chars = await build_prompt_with_compression(
-                base_url=self.kobold_client._get_api_base_url(),
-                current_mode="autocomplete",
-                main_text=text_up_to_cursor,
-                ui_data=ui_data,
-                compression_mode=self.settings.get("compression_mode", "token_dynamic"),
-                max_length_generate=self.max_length  # オートコンプリート用の最大長を指定
-            )
+            use_chat_mode = getattr(main_window, "_use_chat_completions_mode", lambda: False)()
+            generation_params = None
+            if use_chat_mode:
+                generation_params = {
+                    "chat_template_kwargs": {
+                        "enable_thinking": bool(ui_data.get("enable_thinking", False))
+                    }
+                }
+
+            if use_chat_mode:
+                prompt = None
+                messages, total_tokens, is_overflow, original_body_chars, compressed_body_chars = await build_chat_messages_with_compression(
+                    base_url=self.kobold_client._get_api_base_url(),
+                    current_mode="autocomplete",
+                    main_text=text_up_to_cursor,
+                    ui_data=ui_data,
+                    compression_mode=self.settings.get("compression_mode", "token_dynamic"),
+                    max_length_generate=self.max_length
+                )
+            else:
+                messages = None
+                prompt, total_tokens, is_overflow, original_body_chars, compressed_body_chars = await build_prompt_with_compression(
+                    base_url=self.kobold_client._get_api_base_url(),
+                    current_mode="autocomplete",
+                    main_text=text_up_to_cursor,
+                    ui_data=ui_data,
+                    compression_mode=self.settings.get("compression_mode", "token_dynamic"),
+                    max_length_generate=self.max_length
+                )
             
             # オーバーフロー判定: 圧縮後もコンテキスト長を超える場合は生成をスキップ
             if is_overflow:
@@ -215,14 +238,24 @@ class AutocompleteManager(QObject):
             
             generated_text = ""
             
-            async for token in self.kobold_client.generate_stream(
-                prompt,
-                max_length=self.max_length,
-                stop_sequence=None,  # 設定のストップシーケンスを使用
-                banned_strings=banned_strings,  # マージされた禁止ワードリスト
-                current_mode="autocomplete"
-            ):
-                generated_text += token
+            if use_chat_mode:
+                async for token in self.kobold_client.generate_chat_stream(
+                    messages or [],
+                    max_length=self.max_length,
+                    stop_sequence=["\n"] if ban_newlines else None,
+                    current_mode="autocomplete",
+                    generation_params=generation_params,
+                ):
+                    generated_text += token
+            else:
+                async for token in self.kobold_client.generate_stream(
+                    prompt,
+                    max_length=self.max_length,
+                    stop_sequence=None,
+                    banned_strings=banned_strings,
+                    current_mode="autocomplete"
+                ):
+                    generated_text += token
             
             # ゴーストテキストを表示（無効化時の表示残留バグ防止）
             if generated_text:

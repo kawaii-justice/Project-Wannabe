@@ -13,9 +13,15 @@ from typing import Dict, Optional, List # Add Optional and List here
 
 # Correctly import custom widgets and other modules
 from src.ui.widgets import CollapsibleSection, TagWidget
-from src.ui.dialogs import KoboldConfigDialog, GenerationParamsDialog
+from src.ui.dialogs import KoboldConfigDialog, GenerationParamsDialog, ChatTemplateModeStartupDialog
 from src.core.kobold_client import KoboldClient, KoboldClientError
-from src.core.prompt_builder import build_prompt, build_prompt_with_compression
+from src.core.prompt_builder import (
+    build_prompt,
+    build_prompt_with_compression,
+    build_chat_messages,
+    build_chat_messages_with_compression,
+    serialize_chat_messages_for_token_count,
+)
 from src.core.dynamic_prompts import evaluate_dynamic_prompt
 from src.core.settings import load_settings, DEFAULT_SETTINGS
 from src.ui.menu_handler import MenuHandler
@@ -88,6 +94,7 @@ class MainWindow(QMainWindow):
 
         self._connect_token_update_signals()
         self._schedule_token_update()
+        QTimer.singleShot(0, self._show_startup_template_mode_dialog_if_needed)
  
     def _connect_token_update_signals(self):
         self.main_text_edit.textChanged.connect(self._schedule_token_update)
@@ -100,15 +107,67 @@ class MainWindow(QMainWindow):
         self.genre_widget.tagsChanged.connect(self._schedule_token_update)
         self.rating_combo_details.currentIndexChanged.connect(self._schedule_token_update)
         self.dialogue_level_combo.currentIndexChanged.connect(self._schedule_token_update)
+        self.thinking_mode_checkbox.toggled.connect(self._schedule_token_update)
 
     def _schedule_token_update(self, *args):
         if self._is_closing:
             return
         self.token_update_timer.start(self._token_update_debounce_ms)
 
+    def _get_prompt_delivery_mode(self) -> str:
+        settings = load_settings()
+        return settings.get("prompt_delivery_mode", DEFAULT_SETTINGS.get("prompt_delivery_mode", "mistral_legacy"))
+
+    def _use_chat_completions_mode(self) -> bool:
+        return self._get_prompt_delivery_mode() == "chat_completions_generic"
+
+    async def _stream_generation_request(
+        self,
+        *,
+        prompt: Optional[str] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+        assistant_prefill: Optional[str] = None,
+        max_length: int,
+        stop_sequence: Optional[List[str]] = None,
+        generation_params: Optional[Dict[str, object]] = None,
+    ):
+        if self._use_chat_completions_mode():
+            async for token in self.kobold_client.generate_chat_stream(
+                messages or [],
+                assistant_prefill=assistant_prefill,
+                max_length=max_length,
+                stop_sequence=stop_sequence,
+                current_mode=self.current_mode,
+                generation_params=generation_params,
+            ):
+                yield token
+        else:
+            async for token in self.kobold_client.generate_stream(
+                prompt or "",
+                max_length=max_length,
+                stop_sequence=stop_sequence,
+                current_mode=self.current_mode,
+            ):
+                yield token
+
     def _create_menu_bar(self):
         """Creates the menu bar using MenuHandler."""
         self.setMenuBar(self.menu_handler.create_menu_bar())
+
+    def _show_startup_template_mode_dialog_if_needed(self):
+        settings = load_settings()
+        if settings.get(
+            "skip_template_mode_prompt_on_startup",
+            DEFAULT_SETTINGS.get("skip_template_mode_prompt_on_startup", False),
+        ):
+            return
+
+        dialog = ChatTemplateModeStartupDialog(self)
+        if dialog.exec() == QDialog.Accepted:
+            self.kobold_client.reload_settings()
+            if hasattr(self, "autocomplete_manager"):
+                self.autocomplete_manager.reload_settings()
+            self.status_bar.showMessage("チャットテンプレモードを更新しました。", 3000)
 
     def _create_toolbar(self):
         """Creates the main toolbar for mode switching."""
@@ -140,6 +199,11 @@ class MainWindow(QMainWindow):
         self.autocomplete_checkbox.setFocusPolicy(Qt.NoFocus)  # フォーカスを無効化してショートカット暴発を防止
         self.autocomplete_checkbox.toggled.connect(self._toggle_autocomplete_mode)
         toolbar.addWidget(self.autocomplete_checkbox)
+
+        self.thinking_mode_checkbox = QCheckBox("思考モード(対応モデルのみ)")
+        self.thinking_mode_checkbox.setChecked(False)
+        self.thinking_mode_checkbox.setFocusPolicy(Qt.NoFocus)
+        toolbar.addWidget(self.thinking_mode_checkbox)
         
         # スペーサーを追加して右端にショートカット説明を配置
         spacer = QWidget()
@@ -473,17 +537,26 @@ class MainWindow(QMainWindow):
                 # Generate suffix regardless of warning, as we are continuing
                 prompt_suffix = processor.generate_prompt_suffix(selected_item_key)
 
-            # Get base prompt (unchanged logic for IDEA mode in build_prompt)
-            # Pass the full ui_data including rating and authors_note to build_prompt
             full_ui_data = self._get_metadata_from_ui()
-            base_prompt = build_prompt(
-                current_mode="idea",
-                main_text="", # main_text is not used for IDEA mode
-                ui_data=full_ui_data,
-                cont_prompt_order="reference_first" # This setting doesn't affect IDEA mode
-            )
-
-            final_prompt = base_prompt + prompt_suffix
+            final_prompt = None
+            final_messages = None
+            final_assistant_prefill = None
+            if self._use_chat_completions_mode():
+                final_messages = build_chat_messages(
+                    current_mode="idea",
+                    main_text="",
+                    ui_data=full_ui_data,
+                    cont_prompt_order="reference_first"
+                )
+                final_assistant_prefill = prompt_suffix or None
+            else:
+                base_prompt = build_prompt(
+                    current_mode="idea",
+                    main_text="",
+                    ui_data=full_ui_data,
+                    cont_prompt_order="reference_first"
+                )
+                final_prompt = base_prompt + prompt_suffix
 
             # --- Execute Generation based on mode ---
             self.generation_status = "single_running" # Use single_running status for IDEA task
@@ -496,7 +569,12 @@ class MainWindow(QMainWindow):
             # IDEA "all" item or fast mode should stream
             if selected_item_key == "all" or fast_mode_enabled:
                 self.generation_task = asyncio.ensure_future(
-                    self._run_single_generation(final_prompt, stop_sequence=stop_sequence)
+                    self._run_single_generation(
+                        prompt=final_prompt,
+                        messages=final_messages,
+                        assistant_prefill=final_assistant_prefill,
+                        stop_sequence=stop_sequence,
+                    )
                 )
             # else: # Safe Mode (specific item, not fast)
             #     # Safe Mode: Get full output, then filter
@@ -506,7 +584,13 @@ class MainWindow(QMainWindow):
             # Simplified: If not 'all' and not 'fast', it must be 'safe'
             else: # Safe Mode (specific item, not fast)
                 self.generation_task = asyncio.ensure_future(
-                    self._run_safe_idea_generation(final_prompt, stop_sequence=stop_sequence, selected_item_key=selected_item_key)
+                    self._run_safe_idea_generation(
+                        final_prompt,
+                        stop_sequence=stop_sequence,
+                        selected_item_key=selected_item_key,
+                        messages=final_messages,
+                        assistant_prefill=final_assistant_prefill,
+                    )
                 )
 
 
@@ -536,15 +620,28 @@ class MainWindow(QMainWindow):
                     # 圧縮開始前にステータス表示
                     QTimer.singleShot(0, lambda: self.status_bar.showMessage("本文圧縮中..."))
                     
-                    prompt, total_tokens, is_overflow, original_chars, compressed_chars = await build_prompt_with_compression(
-                        base_url=base_url,
-                        current_mode=self.current_mode,
-                        main_text=main_text,
-                        ui_data=ui_data,
-                        cont_prompt_order=cont_order,
-                        compression_mode=compression_mode,
-                        max_length_generate=max_len_generate,
-                    )
+                    if self._use_chat_completions_mode():
+                        prompt = None
+                        messages, total_tokens, is_overflow, original_chars, compressed_chars = await build_chat_messages_with_compression(
+                            base_url=base_url,
+                            current_mode=self.current_mode,
+                            main_text=main_text,
+                            ui_data=ui_data,
+                            cont_prompt_order=cont_order,
+                            compression_mode=compression_mode,
+                            max_length_generate=max_len_generate,
+                        )
+                    else:
+                        messages = None
+                        prompt, total_tokens, is_overflow, original_chars, compressed_chars = await build_prompt_with_compression(
+                            base_url=base_url,
+                            current_mode=self.current_mode,
+                            main_text=main_text,
+                            ui_data=ui_data,
+                            cont_prompt_order=cont_order,
+                            compression_mode=compression_mode,
+                            max_length_generate=max_len_generate,
+                        )
                     
                     # 圧縮後、元の生成中ステータスに戻す
                     QTimer.singleShot(0, lambda: self.status_bar.showMessage("単発生成中..."))
@@ -606,7 +703,7 @@ class MainWindow(QMainWindow):
                     self._append_to_output(separator)
 
                     # 実際の生成実行
-                    await self._run_single_generation(prompt, stop_sequence=None)
+                    await self._run_single_generation(prompt=prompt, messages=messages, stop_sequence=None)
 
                 except KoboldClientError as e:
                     self._append_to_output(f"\n--- 単発生成エラー: {e} ---\n")
@@ -719,13 +816,28 @@ class MainWindow(QMainWindow):
 
 
     # --- Async Generation Methods ---
-    async def _run_single_generation(self, prompt: str, stop_sequence: Optional[List[str]] = None):
+    async def _run_single_generation(
+        self,
+        prompt: Optional[str] = None,
+        stop_sequence: Optional[List[str]] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+        assistant_prefill: Optional[str] = None,
+    ):
         """
         Runs a single generation (for Generate mode or IDEA Fast mode) and updates status.
         Streams output directly to the UI.
         """
         task_name = "アイデア生成 (高速)" if self.current_mode == "idea" else "単発生成"
         try:
+            ui_data = self._get_metadata_from_ui()
+            generation_params = None
+            if self._use_chat_completions_mode():
+                generation_params = {
+                    "chat_template_kwargs": {
+                        "enable_thinking": bool(ui_data.get("enable_thinking", False))
+                    }
+                }
+
             # Get mode-specific max_length
             settings = load_settings()
             if self.current_mode == "idea":
@@ -733,12 +845,13 @@ class MainWindow(QMainWindow):
             else: # generate mode
                 current_max_length = settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
 
-            # Pass max_length and stop_sequence to generate_stream
-            async for token in self.kobold_client.generate_stream(
-                prompt,
+            async for token in self._stream_generation_request(
+                prompt=prompt,
+                messages=messages,
+                assistant_prefill=assistant_prefill,
                 max_length=current_max_length,
-                stop_sequence=stop_sequence, # Pass the determined stop sequence
-                current_mode=self.current_mode # Pass current mode to determine banned tokens
+                stop_sequence=stop_sequence,
+                generation_params=generation_params,
             ):
                 self._append_to_output(token)
                 await asyncio.sleep(0.001) # Yield control briefly
@@ -767,23 +880,40 @@ class MainWindow(QMainWindow):
             self._schedule_token_update()
             self.generation_task = None
 
-    async def _run_safe_idea_generation(self, prompt: str, stop_sequence: Optional[List[str]], selected_item_key: str):
+    async def _run_safe_idea_generation(
+        self,
+        prompt: Optional[str],
+        stop_sequence: Optional[List[str]],
+        selected_item_key: str,
+        messages: Optional[List[Dict[str, str]]] = None,
+        assistant_prefill: Optional[str] = None,
+    ):
         """
         Runs generation for IDEA Safe mode: gets full output, filters, then displays.
         """
         task_name = "アイデア生成 (安全)"
         full_output = ""
         try:
+            ui_data = self._get_metadata_from_ui()
+            generation_params = None
+            if self._use_chat_completions_mode():
+                generation_params = {
+                    "chat_template_kwargs": {
+                        "enable_thinking": bool(ui_data.get("enable_thinking", False))
+                    }
+                }
+
             # Get mode-specific max_length
             settings = load_settings()
             current_max_length = settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
 
-            # Collect full output from the stream
-            async for token in self.kobold_client.generate_stream(
-                prompt,
+            async for token in self._stream_generation_request(
+                prompt=prompt,
+                messages=messages,
+                assistant_prefill=assistant_prefill,
                 max_length=current_max_length,
                 stop_sequence=stop_sequence,
-                current_mode=self.current_mode
+                generation_params=generation_params,
             ):
                 full_output += token
                 # Optional: Add a small sleep if needed, but not strictly necessary here
@@ -836,9 +966,12 @@ class MainWindow(QMainWindow):
         inf_gen_behavior = settings.get("infinite_generation_behavior", DEFAULT_SETTINGS["infinite_generation_behavior"])
         behavior_key = self.current_mode
         update_behavior = inf_gen_behavior.get(behavior_key, "manual")
+        generation_params = None
 
         # --- Variables to be determined before the loop (for manual) or inside (for immediate) ---
         final_prompt = ""
+        final_messages = None
+        final_assistant_prefill = None
         stop_sequence = None
         fast_mode_enabled = False
         selected_item_key = "all" # Default for safety
@@ -847,7 +980,7 @@ class MainWindow(QMainWindow):
 
         # --- Helper function to prepare IDEA generation parameters ---
         def prepare_idea_params():
-            nonlocal final_prompt, stop_sequence, fast_mode_enabled, selected_item_key, processor, current_max_length
+            nonlocal final_prompt, final_messages, final_assistant_prefill, stop_sequence, fast_mode_enabled, selected_item_key, processor, current_max_length
             try:
                 selected_item_index = self.idea_item_combo.currentIndex()
                 selected_item_key = self.idea_item_combo.itemData(selected_item_index)
@@ -872,14 +1005,25 @@ class MainWindow(QMainWindow):
                         QTimer.singleShot(0, lambda: QMessageBox.warning(self, "前提条件に関する警告", warning_msg))
                         self.infinite_warning_shown = True # Set flag after showing
 
-                # Build base prompt
-                base_prompt = build_prompt(
-                    current_mode="idea",
-                    main_text="",
-                    ui_data=full_ui_data,
-                    cont_prompt_order="reference_first" # Doesn't affect IDEA
-                )
-                final_prompt = base_prompt + prompt_suffix
+                if self._use_chat_completions_mode():
+                    final_messages = build_chat_messages(
+                        current_mode="idea",
+                        main_text="",
+                        ui_data=full_ui_data,
+                        cont_prompt_order="reference_first"
+                    )
+                    final_prompt = ""
+                    final_assistant_prefill = prompt_suffix or None
+                else:
+                    base_prompt = build_prompt(
+                        current_mode="idea",
+                        main_text="",
+                        ui_data=full_ui_data,
+                        cont_prompt_order="reference_first"
+                    )
+                    final_prompt = base_prompt + prompt_suffix
+                    final_messages = None
+                    final_assistant_prefill = None
 
                 # Get IDEA max length
                 current_max_length = settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
@@ -898,7 +1042,7 @@ class MainWindow(QMainWindow):
             無限生成用のGenerateモードプロンプトを動的圧縮込みで構築する。
             is_overflow時はエラー表示用に区別される。
             """
-            nonlocal final_prompt, stop_sequence, current_max_length
+            nonlocal final_prompt, final_messages, final_assistant_prefill, stop_sequence, current_max_length
             try:
                 raw_main_text = self.main_text_edit.toPlainText()
                 main_text = evaluate_dynamic_prompt(raw_main_text)
@@ -914,16 +1058,28 @@ class MainWindow(QMainWindow):
                 # 圧縮開始前にステータス表示
                 QTimer.singleShot(0, lambda: self.status_bar.showMessage("本文圧縮中..."))
                 
-                # 動的圧縮付きプロンプト構築
-                prompt, total_tokens, is_overflow, original_chars, compressed_chars = await build_prompt_with_compression(
-                    base_url=base_url,
-                    current_mode="generate",
-                    main_text=main_text,
-                    ui_data=ui_data,
-                    cont_prompt_order=cont_order,
-                    compression_mode=compression_mode,
-                    max_length_generate=max_len_generate,
-                )
+                if self._use_chat_completions_mode():
+                    prompt = None
+                    messages, total_tokens, is_overflow, original_chars, compressed_chars = await build_chat_messages_with_compression(
+                        base_url=base_url,
+                        current_mode="generate",
+                        main_text=main_text,
+                        ui_data=ui_data,
+                        cont_prompt_order=cont_order,
+                        compression_mode=compression_mode,
+                        max_length_generate=max_len_generate,
+                    )
+                else:
+                    messages = None
+                    prompt, total_tokens, is_overflow, original_chars, compressed_chars = await build_prompt_with_compression(
+                        base_url=base_url,
+                        current_mode="generate",
+                        main_text=main_text,
+                        ui_data=ui_data,
+                        cont_prompt_order=cont_order,
+                        compression_mode=compression_mode,
+                        max_length_generate=max_len_generate,
+                    )
                 
                 # 圧縮後、元の無限生成中ステータスに戻す
                 QTimer.singleShot(0, lambda: self.status_bar.showMessage("無限生成中 (F5で停止)..."))
@@ -986,7 +1142,9 @@ class MainWindow(QMainWindow):
                         QTimer.singleShot(0, _show_warn)
                         self.infinite_warning_shown = True
 
-                final_prompt = prompt
+                final_prompt = prompt or ""
+                final_messages = messages
+                final_assistant_prefill = None
                 stop_sequence = None
                 current_max_length = max_len_generate
                 return True
@@ -1008,13 +1166,21 @@ class MainWindow(QMainWindow):
                     self._stop_current_generation()
                     return
             # Check if initial prompt is empty after manual prep
-            if not final_prompt:
-                print("Error: Initial infinite generation prompt is empty after manual preparation.")
+            if not final_prompt and not final_messages:
+                print("Error: Initial infinite generation payload is empty after manual preparation.")
                 self._stop_current_generation() # This line was missing in the previous SEARCH block
                 return # Add the missing return statement here
         # --- Main Generation Loop ---
         try:
             while self.generation_status == "infinite_running":
+                current_ui_data = self._get_metadata_from_ui()
+                generation_params = None
+                if self._use_chat_completions_mode():
+                    generation_params = {
+                        "chat_template_kwargs": {
+                            "enable_thinking": bool(current_ui_data.get("enable_thinking", False))
+                        }
+                    }
                 # --- Re-prepare parameters if behavior is 'immediate' ---
                 if update_behavior == "immediate":
                     if self.current_mode == "idea":
@@ -1026,8 +1192,8 @@ class MainWindow(QMainWindow):
                             await asyncio.sleep(0.5)
                             continue # Skip this cycle on prep error
                     # Check if prompt is empty after immediate prep
-                    if not final_prompt:
-                        print("Warning: Rebuilt prompt for immediate update is empty. Skipping generation cycle.")
+                    if not final_prompt and not final_messages:
+                        print("Warning: Rebuilt generation payload is empty. Skipping generation cycle.")
                         await asyncio.sleep(0.5)
                         continue
 
@@ -1051,11 +1217,13 @@ class MainWindow(QMainWindow):
                         if selected_item_key == "all":
                             # --- "All" Item: Always Stream ---
                             self._append_to_output(separator)
-                            async for token in self.kobold_client.generate_stream(
-                                final_prompt,
+                            async for token in self._stream_generation_request(
+                                prompt=final_prompt,
+                                messages=final_messages,
+                                assistant_prefill=final_assistant_prefill,
                                 max_length=current_max_length,
-                                stop_sequence=stop_sequence, # Use determined stop sequence even for 'all'
-                                current_mode=self.current_mode # Pass current mode
+                                stop_sequence=stop_sequence,
+                                generation_params=generation_params,
                             ):
                                 if self.generation_status != "infinite_running":
                                     raise asyncio.CancelledError("Infinite generation stopped during stream.")
@@ -1065,11 +1233,13 @@ class MainWindow(QMainWindow):
                         elif not fast_mode_enabled:
                             # --- Safe Mode (Collect, Filter, Append) ---
                             full_output = ""
-                            async for token in self.kobold_client.generate_stream(
-                                final_prompt,
+                            async for token in self._stream_generation_request(
+                                prompt=final_prompt,
+                                messages=final_messages,
+                                assistant_prefill=final_assistant_prefill,
                                 max_length=current_max_length,
                                 stop_sequence=stop_sequence,
-                                current_mode=self.current_mode # Already present, no change needed
+                                generation_params=generation_params,
                             ):
                                 if self.generation_status != "infinite_running":
                                     raise asyncio.CancelledError("Infinite generation stopped during stream.")
@@ -1092,11 +1262,13 @@ class MainWindow(QMainWindow):
                         else:
                             # --- Fast Mode (Stream directly) ---
                             self._append_to_output(separator)
-                            async for token in self.kobold_client.generate_stream(
-                                final_prompt,
+                            async for token in self._stream_generation_request(
+                                prompt=final_prompt,
+                                messages=final_messages,
+                                assistant_prefill=final_assistant_prefill,
                                 max_length=current_max_length,
                                 stop_sequence=stop_sequence,
-                                current_mode=self.current_mode # Already present, no change needed
+                                generation_params=generation_params,
                             ):
                                 if self.generation_status != "infinite_running":
                                     raise asyncio.CancelledError("Infinite generation stopped during stream.")
@@ -1107,11 +1279,13 @@ class MainWindow(QMainWindow):
                     else:
                         # --- Generate Mode Execution (Stream directly) ---
                         self._append_to_output(separator)
-                        async for token in self.kobold_client.generate_stream(
-                            final_prompt,
+                        async for token in self._stream_generation_request(
+                            prompt=final_prompt,
+                            messages=final_messages,
+                            assistant_prefill=final_assistant_prefill,
                             max_length=current_max_length,
-                            stop_sequence=stop_sequence, # Will be None for generate mode
-                            current_mode=self.current_mode # Pass current mode
+                            stop_sequence=stop_sequence,
+                            generation_params=generation_params,
                         ):
                             if self.generation_status != "infinite_running":
                                 raise asyncio.CancelledError("Infinite generation stopped during stream.")
@@ -1181,11 +1355,16 @@ class MainWindow(QMainWindow):
         selected_rating = self.rating_combo_details.currentData()
         # Get the author's note
         authors_note = self.authors_note_edit.toPlainText()
+        settings = load_settings()
+        system_prompt = settings.get("system_prompt", "")
+        enable_thinking = self.thinking_mode_checkbox.isChecked()
 
         return {
             "metadata": metadata,
             "rating": selected_rating,
-            "authors_note": authors_note
+            "authors_note": authors_note,
+            "system_prompt": system_prompt,
+            "enable_thinking": enable_thinking,
         }
 
     async def _cleanup(self): # Make cleanup async
@@ -1504,14 +1683,6 @@ class MainWindow(QMainWindow):
             settings = load_settings()
             cont_order = settings.get("cont_prompt_order", DEFAULT_SETTINGS["cont_prompt_order"])
             
-            # Build prompt without compression for token counting
-            prompt = build_prompt(
-                current_mode=self.current_mode,
-                main_text=main_text,
-                ui_data=ui_data,
-                cont_prompt_order=cont_order
-            )
-            
             # Get max output length based on mode
             if self.current_mode == "idea":
                 max_output = settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
@@ -1528,10 +1699,26 @@ class MainWindow(QMainWindow):
                 
             available_context = max_context - max_output
             
+            if self._use_chat_completions_mode():
+                messages = build_chat_messages(
+                    current_mode=self.current_mode,
+                    main_text=main_text,
+                    ui_data=ui_data,
+                    cont_prompt_order=cont_order
+                )
+                token_count_text = serialize_chat_messages_for_token_count(messages)
+            else:
+                token_count_text = build_prompt(
+                    current_mode=self.current_mode,
+                    main_text=main_text,
+                    ui_data=ui_data,
+                    cont_prompt_order=cont_order
+                )
+
             # Count tokens in prompt
-            prompt_tokens = await count_tokens(base_url, prompt)
+            prompt_tokens = await count_tokens(base_url, token_count_text)
             if prompt_tokens is None:
-                prompt_tokens = len(prompt) // 4  # Fallback approximation
+                prompt_tokens = len(token_count_text) // 4  # Fallback approximation
                 
             # Check if compression is needed
             compression_needed = prompt_tokens > available_context

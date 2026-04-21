@@ -4,7 +4,6 @@ import asyncio
 from typing import AsyncGenerator, Dict, Any, Optional, List
 
 from src.core.settings import load_settings, DEFAULT_SETTINGS
-from src.core.prompt_builder import build_prompt_with_compression
 
 class KoboldClientError(Exception):
     """Custom exception for KoboldClient errors."""
@@ -27,6 +26,10 @@ class KoboldClient:
     def _get_generate_stream_url(self) -> str:
         """Constructs the streaming generation API URL."""
         return f"{self._get_api_base_url()}/api/extra/generate/stream"
+
+    def _get_chat_completions_stream_url(self) -> str:
+        """Constructs the KoboldCpp llama.cpp-flavored chat completions API URL."""
+        return f"{self._get_api_base_url()}/lcpp/v1/chat/completions"
 
     def reload_settings(self):
         """Reloads settings from the config file."""
@@ -159,6 +162,100 @@ class KoboldClient:
         except Exception as e:
             # Catch unexpected errors during streaming
             raise KoboldClientError(f"An unexpected error occurred during streaming: {e}")
+
+    async def generate_chat_stream(
+        self,
+        messages: List[Dict[str, str]],
+        assistant_prefill: Optional[str] = None,
+        max_length: Optional[int] = None,
+        generation_params: Optional[Dict[str, Any]] = None,
+        stop_sequence: Optional[List[str]] = None,
+        current_mode: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
+        api_url = self._get_chat_completions_stream_url()
+
+        effective_messages = [dict(message) for message in messages]
+        if assistant_prefill:
+            if effective_messages and effective_messages[-1].get("role") == "assistant":
+                effective_messages[-1]["content"] = assistant_prefill
+            else:
+                effective_messages.append({"role": "assistant", "content": assistant_prefill})
+
+        payload: Dict[str, Any] = {
+            "messages": effective_messages,
+            "stream": True,
+            "temperature": self._current_settings.get("temperature"),
+            "min_p": self._current_settings.get("min_p"),
+            "top_p": self._current_settings.get("top_p"),
+            "top_k": self._current_settings.get("top_k"),
+            "rep_pen": self._current_settings.get("rep_pen"),
+        }
+
+        if max_length is not None:
+            payload["max_tokens"] = max_length
+        if stop_sequence:
+            payload["stop"] = stop_sequence
+        if generation_params:
+            payload.update(generation_params)
+
+        chat_template_kwargs = payload.get("chat_template_kwargs")
+        if chat_template_kwargs is not None and not chat_template_kwargs:
+            payload.pop("chat_template_kwargs", None)
+
+        if payload.get("top_k") == 0:
+            payload.pop("top_k", None)
+
+        if current_mode == "generate":
+            payload["ban_eos_token"] = True
+
+        payload = {k: v for k, v in payload.items() if v is not None}
+        print(f"Sending chat request to {api_url} with payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
+
+        try:
+            async with self.client.stream("POST", api_url, json=payload) as response:
+                if response.status_code != 200:
+                    error_content = await response.aread()
+                    decoded = error_content.decode(errors="replace")
+                    if response.status_code == 404:
+                        raise KoboldClientError(
+                            "API Error: /lcpp/v1/chat/completions が見つかりません。KoboldCpp の更新版を使っているか確認してください。"
+                        )
+                    if "template" in decoded.lower() or "jinja" in decoded.lower():
+                        raise KoboldClientError(
+                            f"API Error: Chat template 適用に失敗しました。KoboldCpp を --jinja 付きで起動しているか確認してください。 Details: {decoded}"
+                        )
+                    raise KoboldClientError(
+                        f"API Error: Status {response.status_code} - {decoded}"
+                    )
+
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if data_str == "[DONE]":
+                        print("Chat stream finished ([DONE] received).")
+                        break
+                    try:
+                        data = json.loads(data_str)
+                        choices = data.get("choices", [])
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta", {})
+                        token = delta.get("content")
+                        if token:
+                            yield token
+                    except json.JSONDecodeError:
+                        print(f"Warning: Could not decode JSON data: {data_str}")
+                    except Exception as e:
+                        print(f"Error processing chat stream line: {line}, Error: {e}")
+        except httpx.ConnectError as e:
+            raise KoboldClientError(f"Connection Error: Could not connect to {api_url}. Is KoboldCpp running? Details: {e}")
+        except httpx.TimeoutException as e:
+            raise KoboldClientError(f"Timeout Error: Request to {api_url} timed out. Details: {e}")
+        except httpx.RequestError as e:
+            raise KoboldClientError(f"Request Error: An error occurred during the request to {api_url}. Details: {e}")
+        except Exception as e:
+            raise KoboldClientError(f"An unexpected error occurred during chat streaming: {e}")
 
     async def close(self):
         """Closes the underlying HTTP client."""

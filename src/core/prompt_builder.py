@@ -1,27 +1,19 @@
+from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, List
+
 from .settings import load_settings, DEFAULT_SETTINGS
 from .dynamic_prompts import evaluate_dynamic_prompt
 from .context_utils import get_true_max_context_length, count_tokens, get_available_context
 
 # --- Instruction Templates (Adjust based on the fine-tuned model's needs) ---
-# These are examples and should match the expected format of your LLM.
 INSTRUCTION_TEMPLATES = {
     "GEN_INFO": "以下の情報に基づいて小説本文を生成してください。",
     "GEN_ZERO": "自由に小説を生成してください。",
-    "CONT_INFO": "参考情報と本文を踏まえ、最後の文章の自然な続きとなるように小説を生成してください。", # Updated
-    "CONT_ZERO": "本文を踏まえ、最後の文章の自然な続きとなるように小説を生成してください。", # Updated
+    "CONT_INFO": "参考情報と本文を踏まえ、最後の文章の自然な続きとなるように小説を生成してください。",
+    "CONT_ZERO": "本文を踏まえ、最後の文章の自然な続きとなるように小説を生成してください。",
     "IDEA_INFO": "以下の情報に基づいて、完全な小説のアイデア（タイトル、キーワード、ジャンル、あらすじ、設定、プロット）を生成してください。",
     "IDEA_ZERO": "自由に小説のアイデア（タイトル、キーワード、ジャンル、あらすじ、設定、プロット）を生成してください。",
 }
-
-# INSTRUCTION_TEMPLATES = { # Keep the old commented out section if needed for reference
-#     "GEN_INFO": "以下の情報を元に、新しい小説の冒頭部分を執筆してください。",
-#     "GEN_ZERO": "新しい小説の冒頭部分を執筆してください。",
-#     "CONT_INFO": "以下の本文の続きを、参考情報に基づいて執筆してください。",
-#     "CONT_ZERO": "以下の本文の続きを執筆してください。",
-#     "IDEA_INFO": "以下の情報を元に、小説のアイデア（タイトル、キーワード、ジャンル、あらすじ、設定、プロット）を提案してください。各項目は `# 日本語名:` の形式で記述してください。",
-#     "IDEA_ZERO": "新しい小説のアイデア（タイトル、キーワード、ジャンル、あらすじ、設定、プロット）を提案してください。各項目は `# 日本語名:` の形式で記述してください。",
-# }
 
 # --- Metadata Formatting ---
 METADATA_MAP = {
@@ -31,98 +23,66 @@ METADATA_MAP = {
     "synopsis": "あらすじ",
     "setting": "設定",
     "plot": "プロット",
-    "dialogue_level": "セリフ量", # Add dialogue level
+    "dialogue_level": "セリフ量",
 }
 
-# Define the order for metadata in the prompt
 INPUT_METADATA_ORDER_JA = [
     "タイトル", "キーワード", "ジャンル", "あらすじ", "設定", "プロット", "セリフ量"
 ]
-# Create a reverse map for easier lookup
 KEY_MAP_FROM_JA = {v: k for k, v in METADATA_MAP.items()}
 
 
+@dataclass
+class PromptComponents:
+    task_type: str
+    instruction_text: str
+    internal_input: str
+    tail_text: str
+    assistant_prefill: str
+    rating: str
+    system_prompt: str
+
+
 def format_metadata(metadata: Dict[str, str | List[str]], mode: str = "generate") -> str:
-    """
-    Formats the metadata dictionary into a string for the prompt, respecting order.
-    Applies dynamic prompt evaluation to keywords and genres, and strips quotes from them.
-    Excludes 'dialogue_level' if mode is 'idea'.
-    """
     output = []
-    # Iterate based on the defined Japanese name order
     for japanese_name in INPUT_METADATA_ORDER_JA:
         key = KEY_MAP_FROM_JA.get(japanese_name)
         if not key:
-            continue # Skip if the Japanese name isn't in our map
-
-        # --- Skip dialogue_level if in idea mode ---
+            continue
         if mode == "idea" and key == "dialogue_level":
             continue
 
-        value = metadata.get(key) # Get value using the internal key ('title', 'dialogue_level', etc.)
+        value = metadata.get(key)
         if value:
-            # Handle list types (keywords, genres) - Apply dynamic prompts and strip quotes
             if key in ["keywords", "genres"] and isinstance(value, list):
                 evaluated_tags = []
                 for tag in value:
                     evaluated_tag = evaluate_dynamic_prompt(tag)
-                    # Strip outer double quotes AFTER evaluation, as TagWidget already removed input quotes
-                    # but dynamic evaluation might add them back via {"tag A"|tagB}
                     evaluated_tags.append(evaluated_tag.strip('"'))
-                # Filter out any empty tags that might result from evaluation/stripping
                 evaluated_tags = [tag for tag in evaluated_tags if tag]
-                if evaluated_tags: # Only add if list is not empty after evaluation
-                    # `- ` を付けずに改行で結合 (データセット側に合わせる)
+                if evaluated_tags:
                     output.append(f"# {japanese_name}:\n" + "\n".join(item for item in evaluated_tags))
-            # Handle string types (title, synopsis, setting, plot, dialogue_level)
-            # Dynamic prompts for these are handled in build_prompt before formatting
             elif isinstance(value, str) and value.strip():
-                output.append(f"# {japanese_name}:\n{value.strip()}") # Keep original value here
-            # Add other type handling here if necessary
+                output.append(f"# {japanese_name}:\n{value.strip()}")
 
     return "\n\n".join(output)
 
 
 def split_main_text(text: str) -> tuple[str, str]:
-    """
-    Splits the input text into the main part and the tail, preserving all
-    original lines. The tail is defined as the 3 lines ending at the
-    second-to-last content line. The last content line itself is NOT part
-    of the return value.
-
-    Args:
-        text: The main text input.
-
-    Returns:
-        A tuple containing (main_part_text, tail_text).
-        Returns ("", "") if the text has less than 4 content lines,
-        as a split is not meaningful.
-    """
     if not text:
         return "", ""
 
     lines = text.splitlines()
-    # Find indices of all lines with content
     content_line_indices = [i for i, line in enumerate(lines) if line.strip()]
-
-    # If not enough content for a split, return empty parts.
     if len(content_line_indices) < 4:
         return "", ""
 
-    # The tail is based on the second-to-last content line.
-    # This is the end point of the tail (inclusive).
     tail_end_index = content_line_indices[-2]
+    tail_start_index = max(0, tail_end_index - 2)
 
-    # The tail starts 2 lines before its end point (for a total of 3 lines).
-    tail_start_index = tail_end_index - 2
-    if tail_start_index < 0:
-        tail_start_index = 0
-
-    # The tail includes the end line, so we slice up to end_index + 1.
-    tail_lines = lines[tail_start_index : tail_end_index + 1]
+    tail_lines = lines[tail_start_index: tail_end_index + 1]
     tail_text = "\n".join(tail_lines)
 
-    # The main part is everything before the tail's start.
     main_part_lines = lines[:tail_start_index]
     main_part_text = "\n".join(main_part_lines)
 
@@ -130,29 +90,14 @@ def split_main_text(text: str) -> tuple[str, str]:
 
 
 def is_sentence_complete(text: str) -> bool:
-    """
-    Determines if the given text ends with a complete sentence.
-    A sentence is considered complete if, after stripping trailing whitespace (excluding newlines),
-    it ends with a period (。), a closing bracket (」), or a newline character (\n).
-    """
     if not text:
         return False
 
-    # 末尾から改行文字を除く空白文字をすべて取り除く
-    # rstrip() はデフォルトで全ての空白文字を削除するため、改行文字を考慮する場合は手動で処理
-    stripped_text = text.rstrip(" \t") # スペースとタブのみ削除
-
-    # 処理後の文字列の末尾が、以下のいずれかの文字で終わっている場合、「完結している」と判定
-    # 改行文字は、rstrip()で削除されていない元のテキストの末尾で確認する必要がある
-    if stripped_text.endswith("。") or \
-       stripped_text.endswith("」"):
+    stripped_text = text.rstrip(" \t")
+    if stripped_text.endswith("。") or stripped_text.endswith("」"):
         return True
-    
-    # 元のテキストの最後の文字が改行であるかを確認
-    # ただし、改行のみの行は完結とみなさないため、strip()で空になる場合は除外
-    if text.endswith("\n") and text.strip(): # テキストが空でないことを確認
+    if text.endswith("\n") and text.strip():
         return True
-
     return False
 
 
@@ -161,157 +106,99 @@ def determine_task_and_instruction(
     main_text: str,
     metadata: Dict[str, str | list[str]]
 ) -> Tuple[str, str]:
-    """
-    Determines the task type (GEN, CONT, IDEA) and corresponding instruction
-    based on the UI state.
-
-    Returns:
-        Tuple[str, str]: (task_type, instruction_text)
-    """
     has_main_text = bool(main_text.strip())
 
-    # --- Determine Metadata Presence Explicitly ---
     has_title = bool(metadata.get("title", "").strip())
     has_keywords = bool(metadata.get("keywords", []))
     has_genres = bool(metadata.get("genres", []))
     has_synopsis = bool(metadata.get("synopsis", "").strip())
     has_setting = bool(metadata.get("setting", "").strip())
     has_plot = bool(metadata.get("plot", "").strip())
-    # dialogue_level key only exists in metadata if it's not "指定なし"
     has_dialogue_level = "dialogue_level" in metadata
 
-    # Combine checks based on mode
-    # For generate/continue mode, any metadata counts
     has_any_metadata_for_gen_cont = (
         has_title or has_keywords or has_genres or has_synopsis or
         has_setting or has_plot or has_dialogue_level
     )
-    # For idea mode, exclude dialogue_level
     has_any_metadata_for_idea = (
         has_title or has_keywords or has_genres or has_synopsis or
         has_setting or has_plot
     )
 
-    # --- Determine Task Type ---
-    task_type = "GEN_ZERO" # Default
+    task_type = "GEN_ZERO"
 
-    if current_mode == "generate" or current_mode == "autocomplete":
+    if current_mode in ("generate", "autocomplete"):
         if not has_main_text:
             task_type = "GEN_INFO" if has_any_metadata_for_gen_cont else "GEN_ZERO"
-        else: # has_main_text
-            # Count content lines in main_text to decide between GEN and CONT
+        else:
             content_lines = [line for line in main_text.splitlines() if line.strip()]
-            num_content_lines = len(content_lines)
-
-            if num_content_lines < 4:
-                # If less than 4 content lines, treat as GEN task
+            if len(content_lines) < 4:
                 task_type = "GEN_INFO" if has_any_metadata_for_gen_cont else "GEN_ZERO"
             else:
-                # If 4 or more content lines, treat as CONT task
                 task_type = "CONT_INFO" if has_any_metadata_for_gen_cont else "CONT_ZERO"
     elif current_mode == "idea":
         task_type = "IDEA_INFO" if has_any_metadata_for_idea else "IDEA_ZERO"
     else:
-        # Fallback or error handling for unknown mode
         print(f"Warning: Unknown mode '{current_mode}'. Defaulting to GEN_ZERO.")
-        task_type = "GEN_ZERO"
 
-    instruction_text = INSTRUCTION_TEMPLATES.get(task_type, "指示が見つかりません。") # Fallback
-    # Returns the base instruction text without the rating part.
+    instruction_text = INSTRUCTION_TEMPLATES.get(task_type, "指示が見つかりません。")
     return task_type, instruction_text
 
 
-def build_prompt(
+def _normalize_ui_data(ui_data: dict) -> tuple[Dict[str, str | list[str]], str, str, str]:
+    raw_metadata = ui_data.get("metadata", {})
+    rating_override = ui_data.get("rating")
+    raw_authors_note = ui_data.get("authors_note", "")
+    raw_system_prompt = ui_data.get("system_prompt", "")
+
+    metadata = {
+        "title": evaluate_dynamic_prompt(raw_metadata.get("title", "")),
+        "keywords": raw_metadata.get("keywords", []),
+        "genres": raw_metadata.get("genres", []),
+        "synopsis": evaluate_dynamic_prompt(raw_metadata.get("synopsis", "")),
+        "setting": evaluate_dynamic_prompt(raw_metadata.get("setting", "")),
+        "plot": evaluate_dynamic_prompt(raw_metadata.get("plot", "")),
+        "dialogue_level": raw_metadata.get("dialogue_level"),
+    }
+    if metadata["dialogue_level"] is None:
+        del metadata["dialogue_level"]
+
+    settings = load_settings()
+    rating_to_use = rating_override or settings.get("default_rating", DEFAULT_SETTINGS["default_rating"])
+    authors_note = evaluate_dynamic_prompt(raw_authors_note)
+    system_prompt = evaluate_dynamic_prompt(raw_system_prompt).strip()
+
+    return metadata, rating_to_use, authors_note, system_prompt
+
+
+def build_prompt_components(
     current_mode: str,
     main_text: str,
     ui_data: dict,
     cont_prompt_order: str = "reference_first"
-) -> str:
-    """
-    NOTE:
-    この関数は「与えられたmain_text」を元にプロンプト文字列を構築するのみ。
-    動的圧縮ロジックは build_prompt_with_compression() 側で、
-    main_textを調整しながら本関数を再呼び出しする。
+) -> PromptComponents:
+    metadata, rating_to_use, authors_note, system_prompt = _normalize_ui_data(ui_data)
+    task_type, base_instruction_text = determine_task_and_instruction(current_mode, main_text, metadata)
 
-    Args:
-        current_mode: The current operation mode ('generate', 'idea', or 'autocomplete').
-        main_text: The main text input from the UI.
-        ui_data: Dictionary containing metadata, rating, and authors_note from the UI.
-        cont_prompt_order: The desired order for continuation prompts ('text_first' or 'reference_first').
-    """
-    # --- Extract data from ui_data and apply dynamic prompts ---
-    raw_metadata = ui_data.get("metadata", {})
-    rating_override = ui_data.get("rating") # Rating from UI details tab
-    raw_authors_note = ui_data.get("authors_note", "")
-
-    # Apply dynamic prompts to relevant fields BEFORE further processing
-    metadata = {
-        "title": evaluate_dynamic_prompt(raw_metadata.get("title", "")),
-        "keywords": raw_metadata.get("keywords", []), # Evaluate keywords in format_metadata
-        "genres": raw_metadata.get("genres", []),   # Evaluate genres in format_metadata
-        "synopsis": evaluate_dynamic_prompt(raw_metadata.get("synopsis", "")),
-        "setting": evaluate_dynamic_prompt(raw_metadata.get("setting", "")),
-        "plot": evaluate_dynamic_prompt(raw_metadata.get("plot", "")),
-        # dialogue_level is not a free text field, no evaluation needed
-        "dialogue_level": raw_metadata.get("dialogue_level")
-    }
-    # Filter out dialogue_level if it's None (wasn't present in raw_metadata)
-    if metadata["dialogue_level"] is None:
-        del metadata["dialogue_level"]
-
-    authors_note = evaluate_dynamic_prompt(raw_authors_note)
-
-    # --- Determine rating to use ---
-    if rating_override:
-        rating_to_use = rating_override
-    else:
-        # Load default rating from settings if no override is provided
-        settings = load_settings()
-        rating_to_use = settings.get("default_rating", DEFAULT_SETTINGS["default_rating"])
-
-    # --- Determine base instruction (without rating) ---
-    task_type, base_instruction_text = determine_task_and_instruction(
-        current_mode, main_text, metadata # Pass metadata extracted from ui_data
-    )
-
-    # --- Format metadata string ---
-    # Pass current_mode to format_metadata to handle exclusion logic
     metadata_input_string = format_metadata(metadata, mode=current_mode)
     internal_input = ""
+    assistant_prefill = ""
+    tail_text = ""
 
-    # --- Format metadata string ---
-    metadata_input_string = format_metadata(metadata, mode=current_mode)
-    internal_input = ""
-    prompt_suffix = "" # Initialize prompt_suffix
-
-    # --- Build internal_input and prompt_suffix based on task type ---
     if task_type.startswith("GEN"):
-        # GEN tasks: internal_input is metadata_input_string.
-        # If main_text exists (less than 4 content lines), it becomes the prompt_suffix.
-        # Whitespace and newlines are preserved.
         internal_input = metadata_input_string
         if main_text:
-            # GENタスクでは、オートコンプリートモードでも通常のgenerateモードと同様に
-            # main_text全体をprompt_suffixとして設定する（【本文】ブロックは作成しない）
-            prompt_suffix = main_text
+            assistant_prefill = main_text
     elif task_type.startswith("IDEA"):
-        # IDEA tasks: internal_input is metadata_input_string. No prompt_suffix from main_text.
         internal_input = metadata_input_string
-        # IDEA tasks might have their own suffix logic via IdeaProcessor, but that's external to build_prompt's main_text handling.
     elif task_type.startswith("CONT"):
-        # CONT tasks: Preserve whitespace. Split text into main_part, tail, and suffix.
         try:
             if current_mode == "autocomplete":
-                # オートコンプリートモード：is_sentence_completeの判定をスキップし、現在の行を常にsuffixとして扱う
-                # 最後の改行文字より後ろのテキストをsuffixとする
-                last_newline_index = main_text.rfind('\n')
+                last_newline_index = main_text.rfind("\n")
                 if last_newline_index != -1:
-                    prompt_suffix = main_text[last_newline_index + 1:]
-                    # suffixより前のテキストをコンテキストとして扱う
+                    assistant_prefill = main_text[last_newline_index + 1:]
                     context_text = main_text[:last_newline_index + 1]
-                    # split_main_textを使わず、オートコンプリート専用の分割ロジックを使用
-                    # context_textを行単位で分割し、末尾3行をtail、残りをmain_partとする
-                    lines = context_text.splitlines(keepends=True)  # 改行を保持して分割
+                    lines = context_text.splitlines(keepends=True)
                     if len(lines) > 3:
                         main_part = "".join(lines[:-3])
                         tail = "".join(lines[-3:])
@@ -319,64 +206,43 @@ def build_prompt(
                         main_part = ""
                         tail = "".join(lines)
                 else:
-                    # 改行がない場合、全体をsuffixとし、コンテキストは空にする
-                    prompt_suffix = main_text
+                    assistant_prefill = main_text
                     main_part, tail = "", ""
             else:
-                # 通常のgenerateモード
                 if is_sentence_complete(main_text):
-                    # 条件A: 文章が完結している場合
-                    prompt_suffix = "" # 空文字列に設定
-
+                    assistant_prefill = ""
                     lines = main_text.splitlines()
-                    # 最後のコンテンツ行のインデックスを見つける
                     last_content_line_index = -1
                     for i in range(len(lines) - 1, -1, -1):
                         if lines[i].strip():
                             last_content_line_index = i
                             break
-                    
+
                     if last_content_line_index != -1:
-                        # 最後のコンテンツ行を含めて、その行で終わる合計3行分をtailとして切り出す
                         tail_end_index = last_content_line_index
-                        tail_start_index = max(0, tail_end_index - 2) # 0未満にならないように調整
-
-                        tail_lines = lines[tail_start_index : tail_end_index + 1]
+                        tail_start_index = max(0, tail_end_index - 2)
+                        tail_lines = lines[tail_start_index: tail_end_index + 1]
                         tail = "\n".join(tail_lines)
-
                         main_part_lines = lines[:tail_start_index]
                         main_part = "\n".join(main_part_lines)
                     else:
-                        # main_textが空行のみの場合など、コンテンツ行がない場合
                         main_part = ""
                         tail = ""
-
                 else:
-                    # 条件B: 文章が途中で終わっている場合
-                    # Find the last content line for the suffix
                     lines = main_text.splitlines()
                     last_content_line = ""
                     for line in reversed(lines):
                         if line.strip():
                             last_content_line = line
                             break
-                    prompt_suffix = last_content_line.strip()
-
-                    # Split the rest of the text using the new logic (preserves whitespace)
+                    assistant_prefill = last_content_line.strip()
                     main_part, tail = split_main_text(main_text)
-
-            # main_partの長さ制限は、動的圧縮ロジック側で
-            # main_textを削ってから本関数を再呼び出しすることで行う。
-
         except Exception as e:
             print(f"Error processing main text for CONT task: {e}")
-            main_part, tail, prompt_suffix = "", "", main_text # Fallback
+            main_part, tail, assistant_prefill = "", "", main_text
 
-        # Create blocks (handle empty cases by setting to None)
-        # Do not strip main_part to preserve its whitespace
         main_part_block = f"【本文】\n```\n{main_part}\n```" if main_part else None
         reference_block = f"【参考情報】\n```\n{metadata_input_string}\n```" if metadata_input_string else None
-        # Get the author's note display mode from settings
         settings = load_settings()
         display_mode = settings.get("authors_note_display_mode", "default")
         if display_mode == "legacy":
@@ -385,44 +251,85 @@ def build_prompt(
             authors_note_block = f"【この先の展開についての指示・メモ】\n```\n{authors_note.strip()}\n```" if authors_note.strip() else None
 
         input_parts = []
+        if cont_prompt_order == "reference_first":
+            if reference_block:
+                input_parts.append(reference_block)
+            if main_part_block:
+                input_parts.append(main_part_block)
+        else:
+            if main_part_block:
+                input_parts.append(main_part_block)
+            if reference_block:
+                input_parts.append(reference_block)
 
-        # 1. Add Reference and Main Part based on order
-        if cont_prompt_order == 'reference_first':
-            if reference_block: input_parts.append(reference_block)
-            if main_part_block: input_parts.append(main_part_block)
-        else: # 'text_first'
-            if main_part_block: input_parts.append(main_part_block)
-            if reference_block: input_parts.append(reference_block)
-
-        # 2. Add Author's Note
         if authors_note_block:
             input_parts.append(authors_note_block)
-
-        # 3. Add Tail Text (tail preserves whitespace from split_main_text)
         if tail:
             input_parts.append(tail)
 
-        # Join parts with a single newline
-        # Filter out None values before joining
+        tail_text = tail
         internal_input = "\n".join(filter(None, input_parts))
 
-    # --- Final Prompt Formatting (Mistral Instruct style) ---
-    # Append rating to the base instruction
-    final_instruction = f"{base_instruction_text} レーティング: {rating_to_use}"
-
-    if internal_input:
-        # Ensure there's a newline between instruction and input if input exists
-        prompt = f"[INST]{final_instruction}\n{internal_input}[/INST]{prompt_suffix}"
-    else:
-        # No extra newline if there's no input
-        prompt = f"[INST]{final_instruction}[/INST]{prompt_suffix}"
-
-    return prompt
+    instruction_text = f"{base_instruction_text} レーティング: {rating_to_use}"
+    return PromptComponents(
+        task_type=task_type,
+        instruction_text=instruction_text,
+        internal_input=internal_input,
+        tail_text=tail_text,
+        assistant_prefill=assistant_prefill,
+        rating=rating_to_use,
+        system_prompt=system_prompt,
+    )
 
 
-# =========================
-# 動的圧縮付きプロンプト構築
-# =========================
+def render_mistral_prompt(components: PromptComponents) -> str:
+    if components.internal_input:
+        return f"[INST]{components.instruction_text}\n{components.internal_input}[/INST]{components.assistant_prefill}"
+    return f"[INST]{components.instruction_text}[/INST]{components.assistant_prefill}"
+
+
+def build_prompt(
+    current_mode: str,
+    main_text: str,
+    ui_data: dict,
+    cont_prompt_order: str = "reference_first"
+) -> str:
+    return render_mistral_prompt(
+        build_prompt_components(current_mode, main_text, ui_data, cont_prompt_order)
+    )
+
+
+def build_chat_messages(
+    current_mode: str,
+    main_text: str,
+    ui_data: dict,
+    cont_prompt_order: str = "reference_first"
+) -> list[dict[str, str]]:
+    components = build_prompt_components(current_mode, main_text, ui_data, cont_prompt_order)
+    messages: list[dict[str, str]] = []
+
+    if components.system_prompt:
+        messages.append({"role": "system", "content": components.system_prompt})
+
+    user_content = components.instruction_text
+    if components.internal_input:
+        user_content = f"{user_content}\n{components.internal_input}"
+    messages.append({"role": "user", "content": user_content})
+
+    if components.assistant_prefill:
+        messages.append({"role": "assistant", "content": components.assistant_prefill})
+
+    return messages
+
+
+def serialize_chat_messages_for_token_count(messages: list[dict[str, str]]) -> str:
+    chunks = []
+    for message in messages:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        chunks.append(f"<{role}>\n{content}")
+    return "\n\n".join(chunks)
+
 
 async def build_prompt_with_compression(
     base_url: str,
@@ -434,132 +341,74 @@ async def build_prompt_with_compression(
     max_length_idea: Optional[int] = None,
     max_length_generate: Optional[int] = None,
 ) -> Tuple[str, int, bool, Optional[int], Optional[int]]:
-    """
-    KoboldCppの true_max_context_length / tokencount を用いて、
-    最大コンテキスト長 - 最大出力長 の制約内に収まるように
-    本文を必要に応じて動的に圧縮したうえでプロンプトを構築する。
-
-    戻り値:
-        (prompt, total_tokens, is_overflow, original_body_chars, compressed_body_chars)
-
-        is_overflow:
-            圧縮後も total_tokens が利用可能トークン数を超えている場合 True。
-        original_body_chars / compressed_body_chars:
-            本文の元文字数と、最終的にプロンプトに使われた本文文字数。
-            （品質警告用に呼び出し側で利用）
-    """
     settings = load_settings()
-
-    # 圧縮モード取得
     mode = compression_mode or settings.get(
         "compression_mode",
         DEFAULT_SETTINGS.get("compression_mode", "token_dynamic")
     )
 
-    # タスク別 最大出力長
     if current_mode == "idea":
-        max_out = max_length_idea or settings.get(
-            "max_length_idea",
-            DEFAULT_SETTINGS["max_length_idea"]
-        )
+        max_out = max_length_idea or settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
     else:
-        # generateモード (GEN/CONT含む) は共通設定を使う
-        max_out = max_length_generate or settings.get(
-            "max_length_generate",
-            DEFAULT_SETTINGS["max_length_generate"]
-        )
+        max_out = max_length_generate or settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
 
-    # true_max_context_length取得（毎回。キャッシュしない）
     true_ctx = await get_true_max_context_length(base_url)
     if true_ctx is None:
-        # フォールバックは context_utils 側で扱うが、
-        # ここでは安全のためDEFAULT_SETTINGS相当を利用しておく
         true_ctx = DEFAULT_SETTINGS.get("max_main_text_chars", 8192)
 
     available_ctx = get_available_context(true_ctx, max_out)
     if available_ctx is None:
-        # 利用可能トークン数が計算不能/非正なら、そのままbuild_promptのみ行う
         prompt = build_prompt(current_mode, main_text, ui_data, cont_prompt_order)
         total = await count_tokens(base_url, prompt) or 0
-        return prompt, total
+        return prompt, total, False, (len(main_text) or None), (len(main_text) or None)
 
-    # 現在のmain_textで一旦プロンプト構築→トークン数計測
     def _build(mt: str) -> str:
         return build_prompt(current_mode, mt, ui_data, cont_prompt_order)
 
     prompt = _build(main_text)
     total_tokens = await count_tokens(base_url, prompt) or 0
-
-    # 本文長（文字数）を記録
     original_body_chars = len(main_text)
 
-    # そもそも収まっている or 本文無し or 圧縮無効 の場合
     if total_tokens <= available_ctx or not main_text.strip() or mode == "none":
         return prompt, total_tokens, False, (original_body_chars or None), (original_body_chars or None)
 
-    # ここから超過時モード別処理
-
-    # --- char_trim: 最大本文文字数で先頭カット ---
     if mode == "char_trim":
-        max_chars = settings.get(
-            "max_main_text_chars",
-            DEFAULT_SETTINGS.get("max_main_text_chars", 8000)
-        )
+        max_chars = settings.get("max_main_text_chars", DEFAULT_SETTINGS.get("max_main_text_chars", 8000))
         if max_chars > 0 and len(main_text) > max_chars:
-            # 末尾側を優先して残す
             truncated = main_text[-max_chars:]
             prompt = _build(truncated)
             total_tokens = await count_tokens(base_url, prompt) or 0
             if total_tokens <= available_ctx:
                 return prompt, total_tokens, False, original_body_chars, len(truncated)
-
-            # 収まらない場合も、最も削ったこの状態を返しつつ overflow フラグON
             return prompt, total_tokens, True, original_body_chars, len(truncated)
-
-        # max_chars以下しか本文がなく、なお超過している場合
         return prompt, total_tokens, True, original_body_chars, len(main_text)
 
-    # --- token_dynamic: トークン数ベース動的圧縮 ---
     if mode == "token_dynamic":
-        step_chars = max(
-            1,
-            int(settings.get(
-                "token_compression_step_chars",
-                DEFAULT_SETTINGS.get("token_compression_step_chars", 100)
-            ))
-        )
+        step_chars = max(1, int(settings.get(
+            "token_compression_step_chars",
+            DEFAULT_SETTINGS.get("token_compression_step_chars", 100)
+        )))
         offset_chars = int(settings.get(
             "token_compression_offset_chars",
             DEFAULT_SETTINGS.get("token_compression_offset_chars", 4000)
         ))
 
-        # 本文単体のトークン数
         body_tokens = await count_tokens(base_url, main_text) or 0
         text_len = max(len(main_text), 1)
         tokens_per_char = body_tokens / text_len if text_len > 0 else 1.0
 
-        # 「その他部分」のトークン数推定:
-        # total_tokens(初回) - body_tokens を参考値とする
         other_tokens_est = max(total_tokens - body_tokens, 0)
-
-        # 本文に割り当て可能なトークン数
         available_for_body = max(available_ctx - other_tokens_est, 0)
         if available_for_body <= 0:
-            # どうやっても無理な場合（既存promptのままoverflow扱い）
             return prompt, total_tokens, True, original_body_chars, original_body_chars
 
-        # 推定収納可能文字数
         est_body_chars = int(available_for_body / max(tokens_per_char, 1e-6))
-
-        # 開始位置: 「できるだけ末尾を残す」ためにオフセット分手前から開始
-        # 例: len - est_body_chars - offset から
         start_index = max(0, len(main_text) - est_body_chars - offset_chars)
 
         best_prompt = prompt
         best_tokens = total_tokens
         best_body_chars = original_body_chars
 
-        # start_index から step_chars ずつ先頭を削りながら探索
         cut_index = start_index
         while cut_index < len(main_text):
             truncated = main_text[cut_index:]
@@ -568,10 +417,8 @@ async def build_prompt_with_compression(
             cand_body_chars = len(truncated)
 
             if cand_tokens <= available_ctx:
-                # 最初に条件を満たしたものを採用
                 return cand_prompt, cand_tokens, False, original_body_chars, cand_body_chars
 
-            # 条件を満たさないが、より少ないトークンのものを控えておく
             if cand_tokens < best_tokens:
                 best_tokens = cand_tokens
                 best_prompt = cand_prompt
@@ -579,139 +426,106 @@ async def build_prompt_with_compression(
 
             cut_index += step_chars
 
-        # ループしても収まらない場合は、最も短かったものを返す（overflow扱い）
         return best_prompt, best_tokens, True, original_body_chars, best_body_chars
 
-    # mode == "none" など未知値は、そのまま（既に先頭でnoneチェック済みだが保険）
     return prompt, total_tokens, (total_tokens > available_ctx), original_body_chars, original_body_chars
 
-# --- Example Usage (Updated for new build_prompt signature) ---
-if __name__ == "__main__":
-    # Example ui_data structure
-    ui_data_gen_meta = {
-        "metadata": {"title": "星降る夜の冒険", "keywords": ["ファンタジー", "魔法"], "synopsis": "見習い魔法使いのリナが、失われた星のかけらを探す旅に出る。"},
-        "rating": "general",
-        "authors_note": ""
-    }
-    ui_data_cont_zero = {
-        "metadata": {},
-        "rating": "general",
-        "authors_note": "次はもっとアクションシーンを増やしたい。"
-    }
-    ui_data_idea_meta = {
-        "metadata": {"genres": ["SF", "学園"], "setting": "近未来の日本。特殊能力を持つ生徒が集まる高校。"},
-        "rating": "general",
-        "authors_note": ""
-    }
-    ui_data_gen_zero = {
-        "metadata": {},
-        "rating": "r18",
-        "authors_note": ""
-    }
-    ui_data_cont_meta_text_first = {
-        "metadata": {"keywords": ["冒険", "宝探し"], "setting": "南海の孤島"},
-        "rating": "general",
-        "authors_note": "地図の謎を強調する。\n登場人物の驚きを描写。"
-    }
-    ui_data_cont_meta_ref_first = {
-        "metadata": {"keywords": ["冒険", "宝探し"], "setting": "南海の孤島"},
-        "rating": "general",
-        "authors_note": "地図の謎を強調する。\n登場人物の驚きを描写。"
-    }
 
+async def build_chat_messages_with_compression(
+    base_url: str,
+    current_mode: str,
+    main_text: str,
+    ui_data: dict,
+    cont_prompt_order: str = "reference_first",
+    compression_mode: Optional[str] = None,
+    max_length_idea: Optional[int] = None,
+    max_length_generate: Optional[int] = None,
+) -> Tuple[list[dict[str, str]], int, bool, Optional[int], Optional[int]]:
+    settings = load_settings()
+    mode = compression_mode or settings.get(
+        "compression_mode",
+        DEFAULT_SETTINGS.get("compression_mode", "token_dynamic")
+    )
 
-    # Scenario 1: Generate new story with metadata
-    prompt1 = build_prompt(current_mode="generate", main_text="", ui_data=ui_data_gen_meta)
-    print("--- Scenario 1: GEN_INFO ---")
-    print(prompt1)
-    print("-" * 20)
+    if current_mode == "idea":
+        max_out = max_length_idea or settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
+    else:
+        max_out = max_length_generate or settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
 
-    # Scenario 2: Continue story with no metadata (but with author's note)
-    text2 = "リナは杖を握りしめ、暗い森へと足を踏み入れた。\n風が不気味に木々を揺らす。\n何かが潜んでいる気配がした。\n彼女は息をのんだ。" # 4 lines
-    prompt2 = build_prompt(current_mode="generate", main_text=text2, ui_data=ui_data_cont_zero)
-    print("--- Scenario 2: CONT_ZERO (with Author's Note) ---")
-    print(prompt2)
-    print("-" * 20)
+    true_ctx = await get_true_max_context_length(base_url)
+    if true_ctx is None:
+        true_ctx = DEFAULT_SETTINGS.get("max_main_text_chars", 8192)
 
-    # Scenario 3: Generate ideas with some metadata
-    prompt3 = build_prompt(current_mode="idea", main_text="", ui_data=ui_data_idea_meta)
-    print("--- Scenario 3: IDEA_INFO ---")
-    print(prompt3)
-    print("-" * 20)
+    available_ctx = get_available_context(true_ctx, max_out)
+    if available_ctx is None:
+        messages = build_chat_messages(current_mode, main_text, ui_data, cont_prompt_order)
+        total = await count_tokens(base_url, serialize_chat_messages_for_token_count(messages)) or 0
+        return messages, total, False, (len(main_text) or None), (len(main_text) or None)
 
-    # Scenario 4: Generate new story with no metadata (R18 rating)
-    prompt4 = build_prompt(current_mode="generate", main_text="", ui_data=ui_data_gen_zero)
-    print("--- Scenario 4: GEN_ZERO (R18) ---")
-    print(prompt4)
-    print("-" * 20)
+    def _build(mt: str) -> list[dict[str, str]]:
+        return build_chat_messages(current_mode, mt, ui_data, cont_prompt_order)
 
-    # Scenario 5: Continue story WITH metadata & Author's Note, order: text_first
-    text5 = "古い地図を広げると、そこには見たこともない島が描かれていた。\nインクが滲んで、一部は判読できない。\n島の中心には奇妙な印がある。\nこれは一体……？" # 4 lines
-    prompt5 = build_prompt(current_mode="generate", main_text=text5, ui_data=ui_data_cont_meta_text_first, cont_prompt_order="text_first")
-    print("--- Scenario 5: CONT_INFO (text_first) ---")
-    print(prompt5)
-    print("-" * 20)
+    messages = _build(main_text)
+    total_tokens = await count_tokens(base_url, serialize_chat_messages_for_token_count(messages)) or 0
+    original_body_chars = len(main_text)
 
-    # Scenario 6: Continue story WITH metadata & Author's Note, order: reference_first (Default)
-    text6 = "古い地図を広げると、そこには見たこともない島が描かれていた。\nインクが滲んで、一部は判読できない。\n島の中心には奇妙な印がある。\nこれは一体……？" # 4 lines
-    prompt6 = build_prompt(current_mode="generate", main_text=text6, ui_data=ui_data_cont_meta_ref_first, cont_prompt_order="reference_first")
-    print("--- Scenario 6: CONT_INFO (reference_first) ---")
-    print(prompt6)
-    print("-" * 20)
+    if total_tokens <= available_ctx or not main_text.strip() or mode == "none":
+        return messages, total_tokens, False, (original_body_chars or None), (original_body_chars or None)
 
-    # Scenario 7: Continue story with only 2 lines of text
-    text7 = "扉を開けると、そこは真っ暗だった。\n冷たい空気が頬を撫でる。" # 2 lines
-    ui_data7 = { "metadata": {}, "rating": "general", "authors_note": "ホラー要素を強めに" }
-    prompt7 = build_prompt(current_mode="generate", main_text=text7, ui_data=ui_data7)
-    print("--- Scenario 7: CONT_ZERO (Short text) ---")
-    print(prompt7)
-    print("-" * 20)
+    if mode == "char_trim":
+        max_chars = settings.get("max_main_text_chars", DEFAULT_SETTINGS.get("max_main_text_chars", 8000))
+        if max_chars > 0 and len(main_text) > max_chars:
+            truncated = main_text[-max_chars:]
+            messages = _build(truncated)
+            total_tokens = await count_tokens(base_url, serialize_chat_messages_for_token_count(messages)) or 0
+            if total_tokens <= available_ctx:
+                return messages, total_tokens, False, original_body_chars, len(truncated)
+            return messages, total_tokens, True, original_body_chars, len(truncated)
+        return messages, total_tokens, True, original_body_chars, len(main_text)
 
-    # Scenario 8: Continue story with empty author's note
-    text8 = "リナは杖を握りしめ、暗い森へと足を踏み入れた。\n風が不気味に木々を揺らす。\n何かが潜んでいる気配がした。\n彼女は息をのんだ。" # 4 lines
-    ui_data8 = { "metadata": {"keywords": ["森", "夜"]}, "rating": "general", "authors_note": "   " } # Empty note
-    prompt8 = build_prompt(current_mode="generate", main_text=text8, ui_data=ui_data8)
-    print("--- Scenario 8: CONT_INFO (Empty Author's Note) ---")
-    print(prompt8)
-    print("-" * 20)
-    meta1 = {"title": "星降る夜の冒険", "keywords": ["ファンタジー", "魔法"], "synopsis": "見習い魔法使いのリナが、失われた星のかけらを探す旅に出る。"}
-    prompt1 = build_prompt(current_mode="generate", main_text="", metadata=meta1)
-    print("--- Scenario 1: GEN_INFO ---")
-    print(prompt1)
-    print("-" * 20)
+    if mode == "token_dynamic":
+        step_chars = max(1, int(settings.get(
+            "token_compression_step_chars",
+            DEFAULT_SETTINGS.get("token_compression_step_chars", 100)
+        )))
+        offset_chars = int(settings.get(
+            "token_compression_offset_chars",
+            DEFAULT_SETTINGS.get("token_compression_offset_chars", 4000)
+        ))
 
-    # Scenario 2: Continue story with no metadata (cont_prompt_order doesn't apply)
-    text2 = "リナは杖を握りしめ、暗い森へと足を踏み入れた。"
-    prompt2 = build_prompt(current_mode="generate", main_text=text2, metadata={})
-    print("--- Scenario 2: CONT_ZERO ---")
-    print(prompt2)
-    print("-" * 20)
+        body_tokens = await count_tokens(base_url, main_text) or 0
+        text_len = max(len(main_text), 1)
+        tokens_per_char = body_tokens / text_len if text_len > 0 else 1.0
 
-    # Scenario 3: Generate ideas with some metadata (cont_prompt_order doesn't apply)
-    meta3 = {"genres": ["SF", "学園"], "setting": "近未来の日本。特殊能力を持つ生徒が集まる高校。"}
-    prompt3 = build_prompt(current_mode="idea", main_text="", metadata=meta3)
-    print("--- Scenario 3: IDEA_INFO ---")
-    print(prompt3)
-    print("-" * 20)
+        other_tokens_est = max(total_tokens - body_tokens, 0)
+        available_for_body = max(available_ctx - other_tokens_est, 0)
+        if available_for_body <= 0:
+            return messages, total_tokens, True, original_body_chars, original_body_chars
 
-    # Scenario 4: Generate new story with no metadata (cont_prompt_order doesn't apply)
-    prompt4 = build_prompt(current_mode="generate", main_text="", metadata={})
-    print("--- Scenario 4: GEN_ZERO ---")
-    print(prompt4)
-    print("-" * 20)
+        est_body_chars = int(available_for_body / max(tokens_per_char, 1e-6))
+        start_index = max(0, len(main_text) - est_body_chars - offset_chars)
 
-    # Scenario 5: Continue story WITH metadata, order: text_first
-    text5 = "古い地図を広げると、そこには見たこともない島が描かれていた。"
-    meta5 = {"keywords": ["冒険", "宝探し"], "setting": "南海の孤島"}
-    prompt5 = build_prompt(current_mode="generate", main_text=text5, metadata=meta5, cont_prompt_order="text_first")
-    print("--- Scenario 5: CONT_INFO (text_first) ---")
-    print(prompt5)
-    print("-" * 20)
+        best_messages = messages
+        best_tokens = total_tokens
+        best_body_chars = original_body_chars
 
-    # Scenario 6: Continue story WITH metadata, order: reference_first (Default)
-    text6 = "古い地図を広げると、そこには見たこともない島が描かれていた。"
-    meta6 = {"keywords": ["冒険", "宝探し"], "setting": "南海の孤島"}
-    prompt6 = build_prompt(current_mode="generate", main_text=text6, metadata=meta6, cont_prompt_order="reference_first")
-    print("--- Scenario 6: CONT_INFO (reference_first) ---")
-    print(prompt6)
-    print("-" * 20)
+        cut_index = start_index
+        while cut_index < len(main_text):
+            truncated = main_text[cut_index:]
+            cand_messages = _build(truncated)
+            cand_tokens = await count_tokens(base_url, serialize_chat_messages_for_token_count(cand_messages)) or 0
+            cand_body_chars = len(truncated)
+
+            if cand_tokens <= available_ctx:
+                return cand_messages, cand_tokens, False, original_body_chars, cand_body_chars
+
+            if cand_tokens < best_tokens:
+                best_tokens = cand_tokens
+                best_messages = cand_messages
+                best_body_chars = cand_body_chars
+
+            cut_index += step_chars
+
+        return best_messages, best_tokens, True, original_body_chars, best_body_chars
+
+    return messages, total_tokens, (total_tokens > available_ctx), original_body_chars, original_body_chars

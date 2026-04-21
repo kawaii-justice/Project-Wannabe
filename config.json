@@ -18,6 +18,8 @@
     "cont_prompt_order": "reference_first",
     "default_rating": "general",
     "authors_note_display_mode": "default",
+    "prompt_delivery_mode": "chat_completions_generic",
+    "system_prompt": "",
     "compression_mode": "token_dynamic",
     "max_main_text_chars": 8000,
     "token_compression_step_chars": 100,

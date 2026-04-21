@@ -24,6 +24,9 @@ DEFAULT_SETTINGS = {
     "cont_prompt_order": "reference_first", # "text_first" or "reference_first" (Default: reference first)
     "default_rating": "general", # Add default rating setting: "general" or "r18"
     "authors_note_display_mode": "default", # "legacy" or "default" (Default: default)
+    "prompt_delivery_mode": "chat_completions_generic",  # "mistral_legacy" or "chat_completions_generic"
+    "system_prompt": "あなたはプロの小説家であり、優秀な創作アシスタントです。ユーザーの指示や提供された設定・文脈に沿って、魅力的で自然な小説やアイデアを生成してください。",
+    "skip_template_mode_prompt_on_startup": False,
 
     # 本文圧縮/コンテキスト管理関連設定
     # 圧縮モード:

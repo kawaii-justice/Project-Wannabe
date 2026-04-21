@@ -44,6 +44,80 @@ class KoboldConfigDialog(QDialog):
         dialog = KoboldConfigDialog(parent)
         return dialog.exec() == QDialog.Accepted
 
+
+class ChatTemplateModeStartupDialog(QDialog):
+    """Startup dialog for selecting the default chat template mode."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("チャットテンプレモードの選択")
+        self.setMinimumWidth(560)
+
+        self.current_settings = load_settings()
+
+        layout = QVBoxLayout(self)
+
+        intro_label = QLabel(
+            "使用するモデルに応じてチャットテンプレモードを選択してください。"
+        )
+        intro_label.setWordWrap(True)
+        layout.addWidget(intro_label)
+
+        model_info = QLabel(
+            "次のモデルを使っている場合は `wanabiシリーズ` を選択してください。\n"
+            "kawaimasa/Wanabi-Novelist-24B-GGUF\n"
+            "kawaimasa/Wanabi-Novelist-12B-GGUF\n"
+            "kawaimasa/wanabi_24b_v1_GGUF\n"
+            "kawaimasa/wanabi_mini_12b_GGUF\n\n"
+            "それ以外のモデルは `汎用` を選択してください。"
+        )
+        model_info.setWordWrap(True)
+        layout.addWidget(model_info)
+
+        mode_group = QGroupBox("チャットテンプレモード")
+        mode_layout = QVBoxLayout(mode_group)
+        self.legacy_radio = QRadioButton("wanabiシリーズ")
+        self.generic_radio = QRadioButton("汎用")
+        mode_layout.addWidget(self.legacy_radio)
+        mode_layout.addWidget(self.generic_radio)
+        layout.addWidget(mode_group)
+
+        current_mode = self.current_settings.get(
+            "prompt_delivery_mode",
+            DEFAULT_SETTINGS.get("prompt_delivery_mode", "chat_completions_generic"),
+        )
+        if current_mode == "mistral_legacy":
+            self.legacy_radio.setChecked(True)
+        else:
+            self.generic_radio.setChecked(True)
+
+        note_label = QLabel("この設定はあとから設定画面から変更できます。")
+        note_label.setWordWrap(True)
+        layout.addWidget(note_label)
+
+        from PySide6.QtWidgets import QCheckBox
+        self.skip_checkbox = QCheckBox("起動時にポップアップしない")
+        self.skip_checkbox.setChecked(
+            self.current_settings.get(
+                "skip_template_mode_prompt_on_startup",
+                DEFAULT_SETTINGS.get("skip_template_mode_prompt_on_startup", False),
+            )
+        )
+        layout.addWidget(self.skip_checkbox)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def accept(self):
+        self.current_settings["prompt_delivery_mode"] = (
+            "mistral_legacy" if self.legacy_radio.isChecked() else "chat_completions_generic"
+        )
+        self.current_settings["skip_template_mode_prompt_on_startup"] = self.skip_checkbox.isChecked()
+        save_settings(self.current_settings)
+        super().accept()
+
 class GenerationParamsDialog(QDialog):
     """Dialog for configuring LLM generation parameters."""
     def __init__(self, parent: QWidget | None = None):
@@ -118,6 +192,21 @@ class GenerationParamsDialog(QDialog):
             self.rating_combo.setCurrentIndex(rating_index)
         # --- End Default Rating Setting ---
 
+        self.prompt_delivery_combo = QComboBox()
+        self.prompt_delivery_combo.addItem("wanabiシリーズ", "mistral_legacy")
+        self.prompt_delivery_combo.addItem("汎用", "chat_completions_generic")
+        current_delivery_mode = self.current_settings.get("prompt_delivery_mode", DEFAULT_SETTINGS.get("prompt_delivery_mode", "mistral_legacy"))
+        delivery_index = self.prompt_delivery_combo.findData(current_delivery_mode)
+        if delivery_index != -1:
+            self.prompt_delivery_combo.setCurrentIndex(delivery_index)
+        form_layout.addRow("チャットテンプレモード:", self.prompt_delivery_combo)
+
+        self.system_prompt_edit = QTextEdit()
+        self.system_prompt_edit.setAcceptRichText(False)
+        self.system_prompt_edit.setPlaceholderText("Generic mode でのみ使用される system prompt")
+        self.system_prompt_edit.setPlainText(self.current_settings.get("system_prompt", DEFAULT_SETTINGS.get("system_prompt", "")))
+        form_layout.addRow("System Prompt:", self.system_prompt_edit)
+
         main_layout.addLayout(form_layout)
 
         # 本文圧縮モード設定 - CollapsibleSectionで囲む
@@ -160,7 +249,7 @@ class GenerationParamsDialog(QDialog):
         gen_control_layout = QVBoxLayout(gen_control_group)
 
         # Stop Sequences
-        stop_seq_label = QLabel("ストップシーケンス (1行に1つ):")
+        stop_seq_label = QLabel("ストップシーケンス (Legacy prompt mode 用 / 1行に1つ):")
         self.stop_seq_edit = QTextEdit()
         self.stop_seq_edit.setAcceptRichText(False)
         self.stop_seq_edit.setPlaceholderText("例:\n[INST]\n[/INST]\n<|endoftext|>")
@@ -368,6 +457,8 @@ class GenerationParamsDialog(QDialog):
 
         # Save default rating setting
         self.current_settings["default_rating"] = self.rating_combo.currentData()
+        self.current_settings["prompt_delivery_mode"] = self.prompt_delivery_combo.currentData()
+        self.current_settings["system_prompt"] = self.system_prompt_edit.toPlainText()
 
         # Save Author's Note Display Mode setting
         self.current_settings["authors_note_display_mode"] = self.authors_note_combo.currentData()
