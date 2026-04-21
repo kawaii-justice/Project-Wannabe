@@ -203,6 +203,7 @@ class GenerationParamsDialog(QDialog):
 
         self.system_prompt_edit = QTextEdit()
         self.system_prompt_edit.setAcceptRichText(False)
+        self.system_prompt_edit.setMinimumHeight(90)
         self.system_prompt_edit.setPlaceholderText("Generic mode でのみ使用される system prompt")
         self.system_prompt_edit.setPlainText(self.current_settings.get("system_prompt", DEFAULT_SETTINGS.get("system_prompt", "")))
         form_layout.addRow("System Prompt:", self.system_prompt_edit)
