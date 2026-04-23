@@ -137,18 +137,23 @@ class AutocompleteManager(QObject):
     def _on_debounce_timer_timeout(self):
         """デバウンスタイマーがタイムアウトした時の処理"""
         print("[AutocompleteManager] Debounce timer expired - starting autocomplete generation")
-        
-        # 非同期タスクとして実行
-        asyncio.ensure_future(self._generate_autocomplete_async())
+        self._start_generation_task("debounce timer")
+
+    def _cancel_current_generation_task(self, reason: str) -> bool:
+        if self.current_generation_task and not self.current_generation_task.done():
+            self.current_generation_task.cancel()
+            print(f"[AutocompleteManager] Existing generation task cancelled for {reason}")
+            return True
+        return False
+
+    def _start_generation_task(self, reason: str):
+        self._cancel_current_generation_task(reason)
+        self.current_generation_task = asyncio.create_task(self._generate_autocomplete_async())
     
     async def _generate_autocomplete_async(self):
         """オートコンプリート生成の非同期処理"""
+        current_task = asyncio.current_task()
         try:
-            # 現在の生成タスクをキャンセル
-            if self.current_generation_task and not self.current_generation_task.done():
-                self.current_generation_task.cancel()
-                print("[AutocompleteManager] 既存の生成タスクをキャンセル")
-            
             # カーソル位置までのテキストを取得
             cursor = self.main_text_edit.textCursor()
             cursor_position = cursor.position()
@@ -257,7 +262,8 @@ class AutocompleteManager(QObject):
                     messages or [],
                     assistant_prefill=assistant_prefill,
                     max_length=self.max_length,
-                    stop_sequence=["\n"] if ban_newlines else None,
+                    stop_sequence=None,
+                    banned_strings=banned_strings,
                     current_mode="autocomplete",
                     generation_params=generation_params,
                 ):
@@ -274,6 +280,9 @@ class AutocompleteManager(QObject):
             
             # ゴーストテキストを表示（無効化時の表示残留バグ防止）
             if generated_text:
+                display_text = generated_text.lstrip("\r\n")
+                if display_text != generated_text:
+                    print("[AutocompleteManager] Stripped leading newlines from autocomplete ghost text")
                 # 生成完了後にカーソル位置をチェック（生成中にカーソルが移動したかを判定）
                 current_cursor_pos = self.main_text_edit.textCursor().position()
                 if start_cursor_pos != current_cursor_pos:
@@ -288,8 +297,11 @@ class AutocompleteManager(QObject):
                     if main_window.generation_status != "idle":
                         print(f"[AutocompleteManager] Skipping display - Main generation status is '{main_window.generation_status}'")
                         return
-                print(f"[Autocomplete Suggestion]: {generated_text}")
-                self.show_ghost_text(generated_text)
+                if not display_text:
+                    print("[AutocompleteManager] Skipping ghost text display - only leading newlines were generated")
+                    return
+                print(f"[Autocomplete Suggestion]: {display_text}")
+                self.show_ghost_text(display_text)
 
                 
             else:
@@ -301,6 +313,9 @@ class AutocompleteManager(QObject):
             print(f"[AutocompleteManager] KoboldClient error: {e}")
         except Exception as e:
             print(f"[AutocompleteManager] Unexpected error: {e}")
+        finally:
+            if self.current_generation_task is current_task:
+                self.current_generation_task = None
     
     def _update_ghost_text_format(self):
         """ゴーストテキストのフォーマットをテーマに合わせて更新"""
@@ -327,9 +342,7 @@ class AutocompleteManager(QObject):
         if not enabled:
             # 無効化時はタイマーを停止
             self.debounce_timer.stop()
-            # 現在の生成タスクをキャンセル
-            if self.current_generation_task and not self.current_generation_task.done():
-                self.current_generation_task.cancel()
+            self._cancel_current_generation_task("disable")
             # ゴーストテキストをクリア
             self.clear_ghost_text()
         print(f"[AutocompleteManager] Enabled state: {enabled}")
@@ -337,8 +350,7 @@ class AutocompleteManager(QObject):
     def cleanup(self):
         """リソースのクリーンアップ"""
         self.debounce_timer.stop()
-        if self.current_generation_task and not self.current_generation_task.done():
-            self.current_generation_task.cancel()
+        self._cancel_current_generation_task("cleanup")
         self.clear_ghost_text()
         print("[AutocompleteManager] Cleanup complete")
     
@@ -557,15 +569,10 @@ class AutocompleteManager(QObject):
         if not self.is_enabled:
             print("[AutocompleteManager] Cannot trigger - autocomplete is disabled")
             return
-        
-        # 現在の生成タスクをキャンセル
-        if self.current_generation_task and not self.current_generation_task.done():
-            self.current_generation_task.cancel()
-            print("[AutocompleteManager] Existing generation task cancelled for manual trigger")
-        
+
         # 既存のゴーストテキストをクリア
         self.clear_ghost_text()
-        
+
         # 即座に生成を開始
         print("[AutocompleteManager] Manual trigger - starting autocomplete generation immediately")
-        asyncio.ensure_future(self._generate_autocomplete_async())
+        self._start_generation_task("manual trigger")

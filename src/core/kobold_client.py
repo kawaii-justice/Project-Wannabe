@@ -164,6 +164,7 @@ class KoboldClient:
         max_length: Optional[int] = None,
         generation_params: Optional[Dict[str, Any]] = None,
         stop_sequence: Optional[List[str]] = None,
+        banned_strings: Optional[List[str]] = None,
         current_mode: Optional[str] = None,
     ) -> AsyncGenerator[ChatStreamEvent, None]:
         api_url = self._get_chat_completions_stream_url()
@@ -190,6 +191,8 @@ class KoboldClient:
             payload["max_tokens"] = max_length
         if stop_sequence:
             payload["stop"] = stop_sequence
+        if banned_strings is not None:
+            payload["banned_tokens"] = banned_strings
         if generation_params:
             payload.update(generation_params)
 
