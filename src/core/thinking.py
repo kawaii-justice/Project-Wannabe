@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, List, Optional
 
 
 THINKING_STRATEGY_DISABLED = "disabled"
@@ -9,6 +9,8 @@ THINKING_STRATEGY_CUSTOM = "custom"
 THINKING_TEMPLATE_DISABLED = "disabled"
 THINKING_TEMPLATE_GEMMA4 = "gemma4"
 THINKING_TEMPLATE_GEMMA4_GENERAL = "gemma4_general"
+THINKING_CONTROL_ON = "<|think|>\n"
+THINKING_CONTROL_OFF = "<|no_think|>\n"
 
 
 @dataclass(frozen=True)
@@ -80,3 +82,20 @@ def build_thought_block(
     if strategy == THINKING_STRATEGY_CUSTOM:
         return f"{custom_prefix}{reasoning}{custom_suffix}"
     raise ValueError(f"Unsupported thought block strategy: {strategy}")
+
+
+def apply_thinking_control_prefix(
+    messages: List[Dict[str, str]],
+    prefix: str,
+) -> List[Dict[str, str]]:
+    updated_messages = [dict(message) for message in messages]
+    if updated_messages and updated_messages[0].get("role") == "system":
+        content = updated_messages[0].get("content") or ""
+        if isinstance(content, str):
+            for marker in (THINKING_CONTROL_ON, THINKING_CONTROL_OFF):
+                if content.startswith(marker):
+                    content = content[len(marker):]
+            updated_messages[0]["content"] = prefix + content
+            return updated_messages
+    updated_messages.insert(0, {"role": "system", "content": prefix})
+    return updated_messages

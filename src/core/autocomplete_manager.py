@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QPlainTextEdit, QApplication
 
 from src.core.kobold_client import KoboldClient, KoboldClientError
 from src.core.settings import load_settings, DEFAULT_SETTINGS
+from src.core.thinking import THINKING_CONTROL_OFF, THINKING_TEMPLATE_GEMMA4, apply_thinking_control_prefix
 from src.core.prompt_builder import (
     build_prompt,
     build_prompt_with_compression,
@@ -192,6 +193,8 @@ class AutocompleteManager(QObject):
                 )
                 thinking_preset = self.settings.get("thinking_template_preset", DEFAULT_SETTINGS.get("thinking_template_preset", "gemma4"))
                 if thinking_preset in {"gemma4", "gemma4_general"}:
+                    if thinking_preset == THINKING_TEMPLATE_GEMMA4:
+                        messages = apply_thinking_control_prefix(messages, THINKING_CONTROL_OFF)
                     existing_prefill = ""
                     if messages and messages[-1].get("role") == "assistant":
                         existing_prefill = messages[-1].get("content", "")

@@ -31,10 +31,13 @@ from src.core.idea_processor import IdeaProcessor, IDEA_ITEM_ORDER, IDEA_ITEM_OR
 from src.core.context_utils import count_tokens, get_available_context, get_true_max_context_length # Import for token counting
 from src.core.thinking import (
     ThinkingRequestPolicy,
+    THINKING_CONTROL_OFF,
+    THINKING_CONTROL_ON,
     THINKING_STRATEGY_GEMMA4_CHANNEL,
     THINKING_TEMPLATE_DISABLED,
     THINKING_TEMPLATE_GEMMA4,
     THINKING_TEMPLATE_GEMMA4_GENERAL,
+    apply_thinking_control_prefix,
     build_thought_block,
     resolve_thinking_policy,
 )
@@ -44,6 +47,7 @@ from src.core.autocomplete_manager import AutocompleteManager
 
 GEMMA4_THOUGHT_OPEN = "<|channel>thought\n"
 GEMMA4_THOUGHT_EMPTY = "<|channel>thought\n<channel|>"
+THINKING_OUTPUT_MISSING_MESSAGE = "思考を出力できませんでした。Koboldの設定などを見直してください。"
 
 
 class AutoGrowingTextBrowser(QTextBrowser):
@@ -263,6 +267,10 @@ class MainWindow(QMainWindow):
     def _gemma4_template_injects_think_prefix(preset: str) -> bool:
         return preset == THINKING_TEMPLATE_GEMMA4
 
+    @staticmethod
+    def _gemma4_template_injects_no_think_prefix(preset: str) -> bool:
+        return preset == THINKING_TEMPLATE_GEMMA4
+
     def _split_generic_assistant_prefill(
         self,
         messages: Optional[List[Dict[str, str]]],
@@ -295,14 +303,10 @@ class MainWindow(QMainWindow):
 
         if policy.effective_enabled:
             if self._gemma4_template_injects_think_prefix(preset):
-                think_prefix = "<|think|>\n"
-                if updated_messages and updated_messages[0].get("role") == "system":
-                    content = updated_messages[0].get("content", "")
-                    if not content.startswith(think_prefix):
-                        updated_messages[0]["content"] = think_prefix + content
-                else:
-                    updated_messages.insert(0, {"role": "system", "content": think_prefix})
+                updated_messages = apply_thinking_control_prefix(updated_messages, THINKING_CONTROL_ON)
         else:
+            if self._gemma4_template_injects_no_think_prefix(preset):
+                updated_messages = apply_thinking_control_prefix(updated_messages, THINKING_CONTROL_OFF)
             if not updated_prefill.startswith(GEMMA4_THOUGHT_OPEN):
                 updated_prefill = f"{GEMMA4_THOUGHT_EMPTY}{updated_prefill}"
 
@@ -552,6 +556,17 @@ class MainWindow(QMainWindow):
             return self._last_output_selection
         return self.output_text_edit.textCursor().selectedText().replace("\u2029", "\n")
 
+    @staticmethod
+    def _is_thinking_output_missing_error(error: Exception) -> bool:
+        return str(error) == THINKING_OUTPUT_MISSING_MESSAGE
+
+    def _show_thinking_output_missing_message(self):
+        QMessageBox.warning(
+            self,
+            "思考モードエラー",
+            THINKING_OUTPUT_MISSING_MESSAGE,
+        )
+
     async def _run_two_pass_prefill_reasoning(
         self,
         *,
@@ -600,7 +615,7 @@ class MainWindow(QMainWindow):
                 self._append_to_block_editor(reasoning_editor, event.reasoning_content)
 
         if not reasoning_text.strip():
-            raise KoboldClientError("二段階生成の1回目で reasoning_content を取得できませんでした。")
+            raise KoboldClientError(THINKING_OUTPUT_MISSING_MESSAGE)
         return reasoning_text
 
     async def _prepare_chat_request_with_thinking(
@@ -736,7 +751,7 @@ class MainWindow(QMainWindow):
             await asyncio.sleep(0.001)
 
         if self._use_chat_completions_mode() and generation_params and generation_params.get("encapsulate_thinking") and not reasoning_text.strip():
-            raise KoboldClientError("thinking を有効化しましたが reasoning_content を取得できませんでした。")
+            raise KoboldClientError(THINKING_OUTPUT_MISSING_MESSAGE)
 
         return content_text, reasoning_text, block_editor
 
@@ -1470,6 +1485,8 @@ class MainWindow(QMainWindow):
             error_msg = f"\n--- {task_name} エラー: {e} ---\n"
             self._append_to_output(error_msg)
             self.status_bar.showMessage(f"{task_name} エラー", 3000)
+            if self._is_thinking_output_missing_error(e):
+                self._show_thinking_output_missing_message()
         except asyncio.CancelledError:
             print(f"{task_name} task cancelled.")
             self._append_to_output(f"\n--- {task_name}がキャンセルされました ---\n")
@@ -1539,6 +1556,8 @@ class MainWindow(QMainWindow):
             error_msg = f"\n--- {task_name} エラー: {e} ---\n"
             self._append_to_output(error_msg) # Append errors
             self.status_bar.showMessage(f"{task_name} エラー", 3000)
+            if self._is_thinking_output_missing_error(e):
+                self._show_thinking_output_missing_message()
         except asyncio.CancelledError:
             print(f"{task_name} task cancelled.")
             self._append_to_output(f"\n--- {task_name}がキャンセルされました ---\n") # Append cancellation message
@@ -1878,6 +1897,8 @@ class MainWindow(QMainWindow):
                     error_msg = f"\n--- 無限生成中エラー: {e} ---\n"
                     self._append_to_output(error_msg)
                     self.status_bar.showMessage("無限生成エラー発生、停止します", 5000)
+                    if self._is_thinking_output_missing_error(e):
+                        self._show_thinking_output_missing_message()
                     self._stop_current_generation() # Stop the infinite loop
                     break # Exit while loop
                 except asyncio.CancelledError:
