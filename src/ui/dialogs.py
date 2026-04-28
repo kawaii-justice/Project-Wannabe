@@ -263,7 +263,7 @@ class GenerationParamsDialog(QDialog):
         prefill_thinking_desc.setWordWrap(True)
         prefill_thinking_layout.addWidget(prefill_thinking_desc)
 
-        self.thinking_prefill_enabled_checkbox = QCheckBox("思考ブロック先頭に固定文を prefill する")
+        self.thinking_prefill_enabled_checkbox = QCheckBox("思考ブロック先頭に固定文を prefill する（脱獄）")
         self.thinking_prefill_enabled_checkbox.setChecked(
             self.current_settings.get(
                 "thinking_prefill_enabled",
