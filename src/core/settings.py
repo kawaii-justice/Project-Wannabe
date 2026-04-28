@@ -6,12 +6,12 @@ CONFIG_FILE = "config.json"
 DEFAULT_SETTINGS = {
     "kobold_port": 5001,
     # "max_length": 250, # Removed old setting
-    "max_length_idea": 500, # Default for idea mode
-    "max_length_generate": 250, # Default for generate mode
-    "max_length_idea_thinking_off": 500,
-    "max_length_idea_thinking_on": 500,
-    "max_length_generate_thinking_off": 250,
-    "max_length_generate_thinking_on": 250,
+    "max_length_idea": 1000, # Default for idea mode
+    "max_length_generate": 500, # Default for generate mode
+    "max_length_idea_thinking_off": 1000,
+    "max_length_idea_thinking_on": 2000,
+    "max_length_generate_thinking_off": 500,
+    "max_length_generate_thinking_on": 1500,
     "temperature": 0.15,
     "min_p": 0.1,
     "top_p": 0.95,
