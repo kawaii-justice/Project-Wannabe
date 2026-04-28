@@ -38,7 +38,9 @@ from src.core.thinking import (
     THINKING_TEMPLATE_GEMMA4,
     THINKING_TEMPLATE_GEMMA4_GENERAL,
     apply_thinking_control_prefix,
+    build_open_thinking_prefill,
     build_thought_block,
+    prepend_thinking_seed,
     resolve_thinking_policy,
 )
 
@@ -128,7 +130,7 @@ class MainWindow(QMainWindow):
 
         self.kobold_client = KoboldClient()
         self._is_closing = False
-        # Generation status: "idle", "single_running", "infinite_running"
+        # Generation status: "idle", "single_running", "infinite_running", "stopping"
         self.generation_status = "idle"
         self.generation_task = None # Holds the asyncio task for generation
         self.output_block_counter = 1
@@ -211,6 +213,17 @@ class MainWindow(QMainWindow):
     def _use_chat_completions_mode(self) -> bool:
         return self._get_prompt_delivery_mode() == "chat_completions_generic"
 
+    def _get_effective_max_length(self, mode: Optional[str] = None) -> int:
+        settings = load_settings()
+        mode = mode or self.current_mode
+        thinking_suffix = "thinking_on" if self.thinking_mode_checkbox.isChecked() else "thinking_off"
+        if mode == "idea":
+            legacy_key = "max_length_idea"
+        else:
+            legacy_key = "max_length_generate"
+        key = f"{legacy_key}_{thinking_suffix}"
+        return int(settings.get(key, settings.get(legacy_key, DEFAULT_SETTINGS[legacy_key])))
+
     async def _stream_generation_request(
         self,
         *,
@@ -252,12 +265,56 @@ class MainWindow(QMainWindow):
             DEFAULT_SETTINGS.get("prefill_thinking_strategy", "disabled"),
         )
 
+    def _get_thinking_prefill_text(self) -> str:
+        settings = load_settings()
+        if not settings.get(
+            "thinking_prefill_enabled",
+            DEFAULT_SETTINGS.get("thinking_prefill_enabled", False),
+        ):
+            return ""
+        return (
+            settings.get(
+                "thinking_prefill_text",
+                DEFAULT_SETTINGS.get("thinking_prefill_text", ""),
+            )
+            or ""
+        ).strip()
+
     def _get_thinking_template_preset(self) -> str:
         settings = load_settings()
         return settings.get(
             "thinking_template_preset",
             DEFAULT_SETTINGS.get("thinking_template_preset", "gemma4"),
         )
+
+    @staticmethod
+    def _get_open_thinking_prefill_state(assistant_prefill: Optional[str]) -> tuple[Optional[str], str]:
+        if not assistant_prefill:
+            return None, ""
+        if assistant_prefill.startswith(GEMMA4_THOUGHT_OPEN) and "<channel|>" not in assistant_prefill:
+            return "<channel|>", assistant_prefill[len(GEMMA4_THOUGHT_OPEN):]
+        think_open = "<think>\n"
+        if assistant_prefill.startswith(think_open) and "</think>" not in assistant_prefill:
+            return "</think>", assistant_prefill[len(think_open):]
+        return None, ""
+
+    @staticmethod
+    def _split_open_thinking_content(
+        content: str,
+        close_marker: str,
+        pending: str,
+    ) -> tuple[str, str, str, bool]:
+        data = pending + content
+        marker_index = data.find(close_marker)
+        if marker_index != -1:
+            reasoning_part = data[:marker_index]
+            visible_part = data[marker_index + len(close_marker):]
+            return reasoning_part, visible_part, "", False
+
+        keep_chars = max(len(close_marker) - 1, 0)
+        if keep_chars and len(data) > keep_chars:
+            return data[:-keep_chars], "", data[-keep_chars:], True
+        return "", "", data, True
 
     @staticmethod
     def _uses_gemma4_thinking_template(preset: str) -> bool:
@@ -638,11 +695,25 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(policy.disable_reason, 4000)
 
         final_prefill = extracted_prefill
+        settings = load_settings()
+        strategy = settings.get("prefill_thinking_strategy", "disabled")
+        if self._uses_gemma4_thinking_template(self._get_thinking_template_preset()):
+            strategy = THINKING_STRATEGY_GEMMA4_CHANNEL
+        thinking_seed_text = self._get_thinking_prefill_text()
+        thinking_seed_prefill = ""
+        if (
+            thinking_seed_text
+            and strategy != "disabled"
+            and policy.effective_enabled
+            and not final_prefill
+        ):
+            thinking_seed_prefill = build_open_thinking_prefill(
+                thinking_seed_text,
+                strategy=strategy,
+                custom_prefix=settings.get("prefill_thinking_custom_prefix", ""),
+            )
+
         if policy.requires_two_pass_prefill and extracted_prefill:
-            settings = load_settings()
-            strategy = settings.get("prefill_thinking_strategy", "disabled")
-            if self._uses_gemma4_thinking_template(self._get_thinking_template_preset()):
-                strategy = THINKING_STRATEGY_GEMMA4_CHANNEL
             reasoning_text = await self._run_two_pass_prefill_reasoning(
                 request_kind=request_kind,
                 base_messages=base_messages,
@@ -652,7 +723,7 @@ class MainWindow(QMainWindow):
                 reasoning_editor=reasoning_editor,
             )
             thought_block = build_thought_block(
-                reasoning_text,
+                prepend_thinking_seed(reasoning_text, thinking_seed_text),
                 strategy=strategy,
                 custom_prefix=settings.get("prefill_thinking_custom_prefix", ""),
                 custom_suffix=settings.get("prefill_thinking_custom_suffix", ""),
@@ -666,6 +737,8 @@ class MainWindow(QMainWindow):
                 requires_two_pass_prefill=False,
                 encapsulate_thinking=False,
             )
+        elif thinking_seed_prefill:
+            final_prefill = thinking_seed_prefill
 
         params = self._build_chat_generation_params(policy)
         final_messages, final_prefill = self._apply_thinking_template_preset(
@@ -732,6 +805,16 @@ class MainWindow(QMainWindow):
             )
             self.output_block_counter += 1
 
+        open_thinking_close_marker, open_thinking_initial_text = self._get_open_thinking_prefill_state(
+            assistant_prefill
+        )
+        open_thinking_pending = ""
+        open_thinking_active = bool(open_thinking_close_marker)
+        backend_reasoning_detected = False
+        if open_thinking_initial_text:
+            reasoning_text += open_thinking_initial_text
+            self._append_to_block_editor(thinking_editor, open_thinking_initial_text)
+
         async for event in self._stream_generation_request(
             prompt=prompt,
             messages=messages,
@@ -741,14 +824,34 @@ class MainWindow(QMainWindow):
             generation_params=generation_params,
         ):
             if event.content:
-                content_text += event.content
-                if append_output:
-                    self._append_to_output(event.content)
-                    self._append_to_block_editor(block_editor, event.content)
+                if open_thinking_active and open_thinking_close_marker and not backend_reasoning_detected:
+                    reasoning_part, visible_part, open_thinking_pending, open_thinking_active = self._split_open_thinking_content(
+                        event.content,
+                        open_thinking_close_marker,
+                        open_thinking_pending,
+                    )
+                    if reasoning_part:
+                        reasoning_text += reasoning_part
+                        self._append_to_block_editor(thinking_editor, reasoning_part)
+                    if visible_part:
+                        content_text += visible_part
+                        if append_output:
+                            self._append_to_output(visible_part)
+                            self._append_to_block_editor(block_editor, visible_part)
+                else:
+                    content_text += event.content
+                    if append_output:
+                        self._append_to_output(event.content)
+                        self._append_to_block_editor(block_editor, event.content)
             if event.reasoning_content:
+                backend_reasoning_detected = True
                 reasoning_text += event.reasoning_content
                 self._append_to_block_editor(thinking_editor, event.reasoning_content)
             await asyncio.sleep(0.001)
+
+        if open_thinking_active and open_thinking_pending and not backend_reasoning_detected:
+            reasoning_text += open_thinking_pending
+            self._append_to_block_editor(thinking_editor, open_thinking_pending)
 
         if self._use_chat_completions_mode() and generation_params and generation_params.get("encapsulate_thinking") and not reasoning_text.strip():
             raise KoboldClientError(THINKING_OUTPUT_MISSING_MESSAGE)
@@ -1132,10 +1235,15 @@ class MainWindow(QMainWindow):
         # 生成開始前にゴーストテキストをクリア
         if hasattr(self, 'autocomplete_manager') and self.autocomplete_manager:
             self.autocomplete_manager.clear_ghost_text()
+            if self.autocomplete_manager._cancel_current_generation_task("main generation start"):
+                asyncio.ensure_future(self.kobold_client.abort_generation())
         
         if self.generation_status == "single_running":
             # If single generation is running, stop it.
             self._stop_current_generation()
+            return
+        elif self.generation_status == "stopping":
+            self.status_bar.showMessage("Generation is still stopping...", 2000)
             return
         elif self.generation_status == "infinite_running":
             # If infinite generation is running, show warning and do nothing.
@@ -1242,13 +1350,14 @@ class MainWindow(QMainWindow):
             compression_mode = settings.get("compression_mode", DEFAULT_SETTINGS.get("compression_mode", "token_dynamic"))
 
             # モード別 最大出力長
-            max_len_generate = settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
+            max_len_generate = self._get_effective_max_length("generate")
 
             # KoboldCppベースURL
             base_url = self.kobold_client._get_api_base_url()
 
             # 動的圧縮付きプロンプト構築
             async def _build_and_run():
+                current_task = asyncio.current_task()
                 try:
                     # 圧縮開始前にステータス表示
                     QTimer.singleShot(0, lambda: self.status_bar.showMessage("本文圧縮中..."))
@@ -1344,6 +1453,8 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self._append_to_output(f"\n--- 単発生成中に予期せぬエラー: {e} ---\n")
                     self.status_bar.showMessage("単発生成 予期せぬエラー", 3000)
+                finally:
+                    self._finalize_generation_task(current_task)
 
             # 非同期タスクとして実行
             self.generation_task = asyncio.ensure_future(_build_and_run())
@@ -1362,6 +1473,9 @@ class MainWindow(QMainWindow):
         elif self.generation_status == "idle":
             # If idle, start infinite generation.
             self._start_infinite_generation()
+        elif self.generation_status == "stopping":
+            self.status_bar.showMessage("Generation is still stopping...", 2000)
+            self.infinite_gen_action.setChecked(False)
         else: # Handle unexpected status
             QMessageBox.warning(self, "不明な状態", f"予期せぬ生成ステータスです: {self.generation_status}")
             self.infinite_gen_action.setChecked(False) # Ensure button is unchecked
@@ -1371,7 +1485,9 @@ class MainWindow(QMainWindow):
         # 生成開始前にゴーストテキストをクリア
         if hasattr(self, 'autocomplete_manager') and self.autocomplete_manager:
             self.autocomplete_manager.clear_ghost_text()
-        
+            if self.autocomplete_manager._cancel_current_generation_task("infinite generation start"):
+                asyncio.ensure_future(self.kobold_client.abort_generation())
+
         self.generation_status = "infinite_running"
         self.infinite_warning_shown = False # Reset warning flag for new session
         self._update_ui_for_generation_start()
@@ -1403,9 +1519,11 @@ class MainWindow(QMainWindow):
         """Stops any currently running generation task."""
         if self.generation_status == "idle" or self.generation_task is None:
             return
+        if self.generation_status == "stopping":
+            return
 
         current_status_before_stop = self.generation_status
-        self.generation_status = "idle" # Set status to idle first
+        self.generation_status = "stopping"
 
         if current_status_before_stop == "infinite_running":
             self.status_bar.showMessage("無限生成 停止中...", 2000)
@@ -1413,9 +1531,13 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("単発生成 停止中...", 2000)
 
         if self.generation_task and not self.generation_task.done():
-            self.generation_task.cancel()
-            # Set task to None immediately after cancellation request
-            self.generation_task = None
+            task = self.generation_task
+            if task is not asyncio.current_task():
+                task.cancel()
+            asyncio.ensure_future(self.kobold_client.abort_generation())
+        else:
+            self._finalize_generation_task(self.generation_task)
+            asyncio.ensure_future(self.kobold_client.abort_generation())
 
         self._update_ui_for_generation_stop()
         self._schedule_token_update()
@@ -1423,6 +1545,14 @@ class MainWindow(QMainWindow):
         # QTimer.singleShot(100, lambda: self.status_bar.showMessage("停止中", 3000))
         self.status_bar.showMessage("停止中", 3000)
 
+
+    def _finalize_generation_task(self, task):
+        if self.generation_task is not task:
+            return
+        self.generation_status = "idle"
+        self._update_ui_for_generation_stop()
+        self._schedule_token_update()
+        self.generation_task = None
 
     def _update_ui_for_generation_start(self):
         """Updates UI elements when generation starts."""
@@ -1460,14 +1590,15 @@ class MainWindow(QMainWindow):
         Runs a single generation (for Generate mode or IDEA Fast mode) and updates status.
         Streams output directly to the UI.
         """
+        current_task = asyncio.current_task()
         task_name = "アイデア生成 (高速)" if self.current_mode == "idea" else "単発生成"
         try:
             # Get mode-specific max_length
             settings = load_settings()
             if self.current_mode == "idea":
-                current_max_length = settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
+                current_max_length = self._get_effective_max_length("idea")
             else: # generate mode
-                current_max_length = settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
+                current_max_length = self._get_effective_max_length("generate")
 
             await self._stream_to_output(
                 prompt=prompt,
@@ -1497,11 +1628,7 @@ class MainWindow(QMainWindow):
             self._append_to_output(error_msg)
             self.status_bar.showMessage("予期せぬエラー", 3000)
         finally:
-            # Reset status after single run finishes or errors out
-            self.generation_status = "idle"
-            self._update_ui_for_generation_stop()
-            self._schedule_token_update()
-            self.generation_task = None
+            self._finalize_generation_task(current_task)
 
     async def _run_safe_idea_generation(
         self,
@@ -1514,11 +1641,12 @@ class MainWindow(QMainWindow):
         """
         Runs generation for IDEA Safe mode: gets full output, filters, then displays.
         """
+        current_task = asyncio.current_task()
         task_name = "アイデア生成 (安全)"
         try:
             # Get mode-specific max_length
             settings = load_settings()
-            current_max_length = settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
+            current_max_length = self._get_effective_max_length("idea")
 
             full_output, _, block_editor = await self._stream_to_output(
                 prompt=prompt,
@@ -1568,15 +1696,12 @@ class MainWindow(QMainWindow):
             self._append_to_output(error_msg) # Append errors
             self.status_bar.showMessage("予期せぬエラー", 3000)
         finally:
-            # Reset status after run finishes or errors out
-            self.generation_status = "idle"
-            self._update_ui_for_generation_stop()
-            self._schedule_token_update()
-            self.generation_task = None
+            self._finalize_generation_task(current_task)
 
 
     async def _run_infinite_generation_loop(self):
         """Continuously generates text, potentially rebuilding the prompt based on settings."""
+        current_task = asyncio.current_task()
         settings = load_settings()
         inf_gen_behavior = settings.get("infinite_generation_behavior", DEFAULT_SETTINGS["infinite_generation_behavior"])
         behavior_key = self.current_mode
@@ -1591,7 +1716,7 @@ class MainWindow(QMainWindow):
         fast_mode_enabled = False
         selected_item_key = "all" # Default for safety
         processor = None
-        current_max_length = settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"]) # Default to generate
+        current_max_length = self._get_effective_max_length("generate") # Default to generate
 
         # --- Helper function to prepare IDEA generation parameters ---
         def prepare_idea_params():
@@ -1643,7 +1768,7 @@ class MainWindow(QMainWindow):
                     final_assistant_prefill = None
 
                 # Get IDEA max length
-                current_max_length = settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
+                current_max_length = self._get_effective_max_length("idea")
 
                 return True # Preparation successful
 
@@ -1668,7 +1793,7 @@ class MainWindow(QMainWindow):
                 current_settings = load_settings()
                 cont_order = current_settings.get("cont_prompt_order", DEFAULT_SETTINGS["cont_prompt_order"])
                 compression_mode = current_settings.get("compression_mode", DEFAULT_SETTINGS.get("compression_mode", "token_dynamic"))
-                max_len_generate = current_settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
+                max_len_generate = self._get_effective_max_length("generate")
 
                 base_url = self.kobold_client._get_api_base_url()
 
@@ -1913,12 +2038,7 @@ class MainWindow(QMainWindow):
                     self._stop_current_generation() # Stop the infinite loop
                     break # Exit while loop
         finally:
-            # Ensure status is reset if loop exits unexpectedly (e.g., error not caught above)
-            # or if it finishes normally but wasn't stopped via button click.
-            # The _stop_current_generation call inside the loop handles cancellation/errors.
-            # This ensures cleanup if the loop condition itself becomes false unexpectedly.
-            if self.generation_status == "infinite_running":
-                self._stop_current_generation()
+            self._finalize_generation_task(current_task)
 
 
     def _append_to_output(self, text: str):
@@ -2288,9 +2408,9 @@ class MainWindow(QMainWindow):
             
             # Get max output length based on mode
             if self.current_mode == "idea":
-                max_output = settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
+                max_output = self._get_effective_max_length("idea")
             else:
-                max_output = settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
+                max_output = self._get_effective_max_length("generate")
             
             # Get available context (max_context - max_output)
             base_url = self.kobold_client._get_api_base_url()

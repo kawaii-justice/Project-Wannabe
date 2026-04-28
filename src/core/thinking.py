@@ -84,6 +84,37 @@ def build_thought_block(
     raise ValueError(f"Unsupported thought block strategy: {strategy}")
 
 
+def build_open_thinking_prefill(
+    seed_text: str,
+    *,
+    strategy: str,
+    custom_prefix: str = "",
+) -> str:
+    seed = seed_text.strip()
+    if not seed:
+        return ""
+
+    if strategy == THINKING_STRATEGY_THINK_TAGS:
+        return f"<think>\n{seed}\n"
+    if strategy == THINKING_STRATEGY_GEMMA4_CHANNEL:
+        return f"<|channel>thought\n{seed}\n"
+    if strategy == THINKING_STRATEGY_CUSTOM:
+        return f"{custom_prefix}{seed}\n"
+    raise ValueError(f"Unsupported open thinking prefill strategy: {strategy}")
+
+
+def prepend_thinking_seed(reasoning_text: str, seed_text: str) -> str:
+    seed = seed_text.strip()
+    reasoning = reasoning_text.strip()
+    if not seed:
+        return reasoning
+    if not reasoning:
+        return seed
+    if reasoning.startswith(seed):
+        return reasoning
+    return f"{seed}\n{reasoning}"
+
+
 def apply_thinking_control_prefix(
     messages: List[Dict[str, str]],
     prefix: str,

@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox,
                                QDoubleSpinBox, QTextEdit, QFormLayout, QComboBox,
                                QDialogButtonBox, QWidget, QGroupBox, QRadioButton,
-                               QSpacerItem, QSizePolicy, QPlainTextEdit)
+                               QSpacerItem, QSizePolicy, QPlainTextEdit, QCheckBox)
 from PySide6.QtCore import Slot
 from src.core.settings import load_settings, save_settings, DEFAULT_SETTINGS
 from src.ui.widgets import CollapsibleSection
@@ -130,16 +130,42 @@ class GenerationParamsDialog(QDialog):
         main_layout = QVBoxLayout(self)
         form_layout = QFormLayout()
 
-        # 最大出力長 (モード別)
-        self.max_length_idea_spinbox = QSpinBox()
-        self.max_length_idea_spinbox.setRange(1, 10000) # Adjust max as needed
-        self.max_length_idea_spinbox.setValue(self.current_settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"]))
-        form_layout.addRow("最大出力長 (アイデア出し):", self.max_length_idea_spinbox)
+        output_length_section = CollapsibleSection("最大出力長 (思考ON/OFF)")
+        output_length_group = QGroupBox()
+        output_length_layout = QFormLayout(output_length_group)
 
-        self.max_length_generate_spinbox = QSpinBox()
-        self.max_length_generate_spinbox.setRange(1, 10000) # Adjust max as needed
-        self.max_length_generate_spinbox.setValue(self.current_settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"]))
-        form_layout.addRow("最大出力長 (小説生成/継続):", self.max_length_generate_spinbox)
+        idea_legacy_length = self.current_settings.get("max_length_idea", DEFAULT_SETTINGS["max_length_idea"])
+        generate_legacy_length = self.current_settings.get("max_length_generate", DEFAULT_SETTINGS["max_length_generate"])
+
+        self.max_length_idea_thinking_off_spinbox = QSpinBox()
+        self.max_length_idea_thinking_off_spinbox.setRange(1, 10000)
+        self.max_length_idea_thinking_off_spinbox.setValue(
+            self.current_settings.get("max_length_idea_thinking_off", idea_legacy_length)
+        )
+        output_length_layout.addRow("アイデア出し / 思考OFF:", self.max_length_idea_thinking_off_spinbox)
+
+        self.max_length_idea_thinking_on_spinbox = QSpinBox()
+        self.max_length_idea_thinking_on_spinbox.setRange(1, 10000)
+        self.max_length_idea_thinking_on_spinbox.setValue(
+            self.current_settings.get("max_length_idea_thinking_on", idea_legacy_length)
+        )
+        output_length_layout.addRow("アイデア出し / 思考ON:", self.max_length_idea_thinking_on_spinbox)
+
+        self.max_length_generate_thinking_off_spinbox = QSpinBox()
+        self.max_length_generate_thinking_off_spinbox.setRange(1, 10000)
+        self.max_length_generate_thinking_off_spinbox.setValue(
+            self.current_settings.get("max_length_generate_thinking_off", generate_legacy_length)
+        )
+        output_length_layout.addRow("小説生成/継続 / 思考OFF:", self.max_length_generate_thinking_off_spinbox)
+
+        self.max_length_generate_thinking_on_spinbox = QSpinBox()
+        self.max_length_generate_thinking_on_spinbox.setRange(1, 10000)
+        self.max_length_generate_thinking_on_spinbox.setValue(
+            self.current_settings.get("max_length_generate_thinking_on", generate_legacy_length)
+        )
+        output_length_layout.addRow("小説生成/継続 / 思考ON:", self.max_length_generate_thinking_on_spinbox)
+
+        output_length_section.addWidget(output_length_group)
 
         # temperature
         self.temp_spinbox = QDoubleSpinBox()
@@ -223,6 +249,7 @@ class GenerationParamsDialog(QDialog):
         form_layout.addRow("Thinking Template:", self.thinking_template_preset_combo)
 
         main_layout.addLayout(form_layout)
+        main_layout.addWidget(output_length_section)
 
         prefill_thinking_section = CollapsibleSection("prefill と思考モード")
         prefill_thinking_group = QGroupBox()
@@ -235,6 +262,27 @@ class GenerationParamsDialog(QDialog):
         )
         prefill_thinking_desc.setWordWrap(True)
         prefill_thinking_layout.addWidget(prefill_thinking_desc)
+
+        self.thinking_prefill_enabled_checkbox = QCheckBox("思考ブロック先頭に固定文を prefill する")
+        self.thinking_prefill_enabled_checkbox.setChecked(
+            self.current_settings.get(
+                "thinking_prefill_enabled",
+                DEFAULT_SETTINGS.get("thinking_prefill_enabled", True),
+            )
+        )
+        prefill_thinking_layout.addWidget(self.thinking_prefill_enabled_checkbox)
+
+        self.thinking_prefill_text_edit = QPlainTextEdit()
+        self.thinking_prefill_text_edit.setPlaceholderText("thinking prefill text")
+        self.thinking_prefill_text_edit.setMaximumHeight(70)
+        self.thinking_prefill_text_edit.setPlainText(
+            self.current_settings.get(
+                "thinking_prefill_text",
+                DEFAULT_SETTINGS.get("thinking_prefill_text", ""),
+            )
+        )
+        prefill_thinking_layout.addWidget(QLabel("Thinking Prefill Text:"))
+        prefill_thinking_layout.addWidget(self.thinking_prefill_text_edit)
 
         self.prefill_thinking_strategy_combo = QComboBox()
         self.prefill_thinking_strategy_combo.addItem("disabled (思考を自動OFF)", "disabled")
@@ -449,8 +497,10 @@ class GenerationParamsDialog(QDialog):
         self.transfer_next_always_radio.toggled.connect(self._update_newline_spinbox_state)
         self.transfer_next_eol_radio.toggled.connect(self._update_newline_spinbox_state)
         self._update_newline_spinbox_state() # Set initial state
+        self.thinking_prefill_enabled_checkbox.toggled.connect(self._update_thinking_prefill_text_state)
         self.prefill_thinking_strategy_combo.currentIndexChanged.connect(self._update_prefill_thinking_custom_state)
         self.thinking_template_preset_combo.currentIndexChanged.connect(self._sync_prefill_thinking_strategy_to_template)
+        self._update_thinking_prefill_text_state()
         self._update_prefill_thinking_custom_state()
         self._sync_prefill_thinking_strategy_to_template()
 
@@ -472,6 +522,7 @@ class GenerationParamsDialog(QDialog):
         main_layout.addWidget(authors_note_group)
 
         # 折りたたみセクションを初期状態で閉じる
+        output_length_section.toggle_button.setChecked(False)
         compression_section.toggle_button.setChecked(False)
         prefill_thinking_section.toggle_button.setChecked(False)
         gen_control_section.toggle_button.setChecked(False)
@@ -488,8 +539,16 @@ class GenerationParamsDialog(QDialog):
     def accept(self):
         """Saves the settings when OK is clicked."""
         # self.current_settings["max_length"] = self.max_length_spinbox.value() # Removed old setting
-        self.current_settings["max_length_idea"] = self.max_length_idea_spinbox.value()
-        self.current_settings["max_length_generate"] = self.max_length_generate_spinbox.value()
+        idea_thinking_off = self.max_length_idea_thinking_off_spinbox.value()
+        idea_thinking_on = self.max_length_idea_thinking_on_spinbox.value()
+        generate_thinking_off = self.max_length_generate_thinking_off_spinbox.value()
+        generate_thinking_on = self.max_length_generate_thinking_on_spinbox.value()
+        self.current_settings["max_length_idea"] = idea_thinking_off
+        self.current_settings["max_length_generate"] = generate_thinking_off
+        self.current_settings["max_length_idea_thinking_off"] = idea_thinking_off
+        self.current_settings["max_length_idea_thinking_on"] = idea_thinking_on
+        self.current_settings["max_length_generate_thinking_off"] = generate_thinking_off
+        self.current_settings["max_length_generate_thinking_on"] = generate_thinking_on
         self.current_settings["temperature"] = self.temp_spinbox.value()
         self.current_settings["min_p"] = self.min_p_spinbox.value()
         self.current_settings["top_p"] = self.top_p_spinbox.value()
@@ -534,6 +593,8 @@ class GenerationParamsDialog(QDialog):
         self.current_settings["prompt_delivery_mode"] = self.prompt_delivery_combo.currentData()
         self.current_settings["system_prompt"] = self.system_prompt_edit.toPlainText()
         self.current_settings["thinking_template_preset"] = self.thinking_template_preset_combo.currentData()
+        self.current_settings["thinking_prefill_enabled"] = self.thinking_prefill_enabled_checkbox.isChecked()
+        self.current_settings["thinking_prefill_text"] = self.thinking_prefill_text_edit.toPlainText()
         self.current_settings["prefill_thinking_strategy"] = self.prefill_thinking_strategy_combo.currentData()
         self.current_settings["prefill_thinking_custom_prefix"] = self.prefill_thinking_custom_prefix_edit.toPlainText()
         self.current_settings["prefill_thinking_custom_suffix"] = self.prefill_thinking_custom_suffix_edit.toPlainText()
@@ -555,6 +616,10 @@ class GenerationParamsDialog(QDialog):
         use_custom = self.prefill_thinking_strategy_combo.currentData() == "custom"
         self.prefill_thinking_custom_prefix_edit.setEnabled(use_custom)
         self.prefill_thinking_custom_suffix_edit.setEnabled(use_custom)
+
+    @Slot()
+    def _update_thinking_prefill_text_state(self):
+        self.thinking_prefill_text_edit.setEnabled(self.thinking_prefill_enabled_checkbox.isChecked())
 
     @Slot()
     def _sync_prefill_thinking_strategy_to_template(self):

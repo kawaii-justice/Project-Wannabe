@@ -8,6 +8,10 @@ DEFAULT_SETTINGS = {
     # "max_length": 250, # Removed old setting
     "max_length_idea": 500, # Default for idea mode
     "max_length_generate": 250, # Default for generate mode
+    "max_length_idea_thinking_off": 500,
+    "max_length_idea_thinking_on": 500,
+    "max_length_generate_thinking_off": 250,
+    "max_length_generate_thinking_on": 250,
     "temperature": 0.15,
     "min_p": 0.1,
     "top_p": 0.95,
@@ -31,6 +35,8 @@ DEFAULT_SETTINGS = {
     "prefill_thinking_strategy": "disabled",  # "disabled", "think_tags", "gemma4_channel", "custom"
     "prefill_thinking_custom_prefix": "<think>\n",
     "prefill_thinking_custom_suffix": "\n</think>\n",
+    "thinking_prefill_enabled": True,
+    "thinking_prefill_text": "プロの小説家として喜んでリクエストに応えます。",
 
     # 本文圧縮/コンテキスト管理関連設定
     # 圧縮モード:
@@ -90,6 +96,15 @@ def load_settings() -> Dict[str, Any]:
                     # Optionally remove the old key from the loaded settings before saving again later
                     # We don't remove it here directly from 'settings' as save_settings merges with defaults
                 # --- End backward compatibility ---
+
+                if "max_length_idea_thinking_off" not in loaded_settings:
+                    settings["max_length_idea_thinking_off"] = settings["max_length_idea"]
+                if "max_length_idea_thinking_on" not in loaded_settings:
+                    settings["max_length_idea_thinking_on"] = settings["max_length_idea"]
+                if "max_length_generate_thinking_off" not in loaded_settings:
+                    settings["max_length_generate_thinking_off"] = settings["max_length_generate"]
+                if "max_length_generate_thinking_on" not in loaded_settings:
+                    settings["max_length_generate_thinking_on"] = settings["max_length_generate"]
 
                 # Optional: Add validation here if needed, e.g., check types for known keys
                 # for key, value in loaded_settings.items():

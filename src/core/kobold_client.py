@@ -27,6 +27,7 @@ class KoboldClient:
     def __init__(self):
         self.client = httpx.AsyncClient(timeout=None)
         self._current_settings = load_settings()
+        self._stream_lock = asyncio.Lock()
 
     def _get_api_base_url(self) -> str:
         port = self._current_settings.get("kobold_port", 5001)
@@ -45,6 +46,17 @@ class KoboldClient:
     async def _open_streaming_response(self, api_url: str, payload: Dict[str, Any]) -> httpx.Response:
         request = self.client.build_request("POST", api_url, json=payload)
         return await self.client.send(request, stream=True)
+
+    async def abort_generation(self) -> None:
+        api_url = f"{self._get_api_base_url()}/api/extra/abort"
+        try:
+            response = await self.client.post(api_url, timeout=5.0)
+            if response.status_code in (404, 405):
+                response = await self.client.get(api_url, timeout=5.0)
+            if response.status_code >= 400:
+                print(f"Kobold abort returned status {response.status_code}: {response.text}")
+        except httpx.RequestError as e:
+            print(f"Kobold abort request failed: {e}")
 
     async def generate_stream(
         self,
@@ -100,7 +112,10 @@ class KoboldClient:
 
         response: Optional[httpx.Response] = None
         line_iter = None
+        lock_acquired = False
         try:
+            await self._stream_lock.acquire()
+            lock_acquired = True
             response = await self._open_streaming_response(api_url, payload)
             if response.status_code != 200:
                 error_content = await response.aread()
@@ -156,6 +171,8 @@ class KoboldClient:
                         pass
                 except Exception:
                     pass
+            if lock_acquired:
+                self._stream_lock.release()
 
     async def generate_chat_stream(
         self,
@@ -211,7 +228,10 @@ class KoboldClient:
 
         response: Optional[httpx.Response] = None
         line_iter = None
+        lock_acquired = False
         try:
+            await self._stream_lock.acquire()
+            lock_acquired = True
             response = await self._open_streaming_response(api_url, payload)
             if response.status_code != 200:
                 error_content = await response.aread()
@@ -282,6 +302,8 @@ class KoboldClient:
                         pass
                 except Exception:
                     pass
+            if lock_acquired:
+                self._stream_lock.release()
 
     async def close(self):
         await self.client.aclose()

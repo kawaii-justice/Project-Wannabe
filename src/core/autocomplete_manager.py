@@ -256,6 +256,9 @@ class AutocompleteManager(QObject):
                 print(f"[AutocompleteManager] Using banned tokens: {banned_strings}")
             
             generated_text = ""
+            if main_window and hasattr(main_window, 'generation_status') and main_window.generation_status != "idle":
+                print(f"[AutocompleteManager] Skipping generation - Main generation status is '{main_window.generation_status}'")
+                return
             
             if use_chat_mode:
                 async for token in self.kobold_client.generate_chat_stream(
