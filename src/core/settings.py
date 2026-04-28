@@ -12,18 +12,18 @@ DEFAULT_SETTINGS = {
     "max_length_idea_thinking_on": 2000,
     "max_length_generate_thinking_off": 500,
     "max_length_generate_thinking_on": 1500,
-    "temperature": 0.15,
+    "temperature": 1.0,
     "min_p": 0.1,
     "top_p": 0.95,
-    "top_k": 0, # Add Top-K setting (0 means disabled in many Kobold setups)
-    "rep_pen": 1.0,
-    "stop_sequences": ["[INST]", "[/INST]"], # Default stop sequences
+    "top_k": 40, # Add Top-K setting (0 means disabled in many Kobold setups)
+    "rep_pen": 1.1,
+    "stop_sequences": [], # Default stop sequences
     "banned_tokens": [], # Default banned tokens list (Phrase Banning)
     "infinite_generation_behavior": { # Add new setting for infinite generation behavior
-        "idea": "manual", # "immediate" or "manual"
-        "generate": "manual" # "immediate" or "manual"
+        "idea": "immediate", # "immediate" or "manual"
+        "generate": "immediate" # "immediate" or "manual"
     },
-    "transfer_to_main_mode": "cursor", # "cursor", "next_line_always", "next_line_eol"
+    "transfer_to_main_mode": "next_line_eol", # "cursor", "next_line_always", "next_line_eol"
     "transfer_newlines_before": 0, # Number of empty lines to insert before transfer in next_line modes
     "cont_prompt_order": "reference_first", # "text_first" or "reference_first" (Default: reference first)
     "default_rating": "general", # Add default rating setting: "general" or "r18"
@@ -32,7 +32,7 @@ DEFAULT_SETTINGS = {
     "system_prompt": "あなたはプロの小説家であり、優秀な創作アシスタントです。ユーザーの指示や提供された設定・文脈に沿って、魅力的で自然な小説やアイデアを生成してください。",
     "skip_template_mode_prompt_on_startup": False,
     "thinking_template_preset": "gemma4",  # "disabled", "gemma4", or "gemma4_general"
-    "prefill_thinking_strategy": "disabled",  # "disabled", "think_tags", "gemma4_channel", "custom"
+    "prefill_thinking_strategy": "gemma4_channel",  # "disabled", "think_tags", "gemma4_channel", "custom"
     "prefill_thinking_custom_prefix": "<think>\n",
     "prefill_thinking_custom_suffix": "\n</think>\n",
     "thinking_prefill_enabled": True,
@@ -63,10 +63,13 @@ DEFAULT_SETTINGS = {
     "warn_short_context_min_chars": 2500,
 
     # オートコンプリート設定
-    "max_length_autocomplete": 64,  # オートコンプリート用の最大出力長
-    "autocomplete_debounce_ms": 1000,  # デバウンス時間（ミリ秒）
+    "max_length_autocomplete": 32,  # オートコンプリート用の最大出力長
+    "autocomplete_debounce_ms": 500,  # デバウンス時間（ミリ秒）
     "autocomplete_trigger_mode": "auto",  # トリガーモード: "auto" または "manual"
-    "autocomplete_ban_newlines": False  # 改行を生成しない (Phrase Banning)
+    "autocomplete_ban_newlines": False,  # 改行を生成しない (Phrase Banning)
+    "font_family": "ＭＳ Ｐ明朝",
+    "font_size": 12,
+    "theme": "light"
 }
 
 def get_config_path() -> str:
