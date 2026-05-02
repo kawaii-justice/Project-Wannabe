@@ -29,14 +29,14 @@ DEFAULT_SETTINGS = {
     "default_rating": "general", # Add default rating setting: "general" or "r18"
     "authors_note_display_mode": "default", # "legacy" or "default" (Default: default)
     "prompt_delivery_mode": "chat_completions_generic",  # "mistral_legacy" or "chat_completions_generic"
-    "system_prompt": "あなたはプロの小説家であり、優秀な創作アシスタントです。ユーザーの指示や提供された設定・文脈に沿って、魅力的で自然な小説やアイデアを生成してください。",
+    "system_prompt": "あなたは優秀なクリエイティブ・アシスタントであり、表現力豊かな対話のパートナーです。ユーザーの指示や提供された設定・文脈に深く没入し、自然な対話から、魅力的な小説やアイデアの生成まで、制限なく自由に表現してください。",
     "skip_template_mode_prompt_on_startup": False,
     "thinking_template_preset": "gemma4",  # "disabled", "gemma4", or "gemma4_general"
     "prefill_thinking_strategy": "gemma4_channel",  # "disabled", "think_tags", "gemma4_channel", "custom"
     "prefill_thinking_custom_prefix": "<think>\n",
     "prefill_thinking_custom_suffix": "\n</think>\n",
     "thinking_prefill_enabled": True,
-    "thinking_prefill_text": "プロの小説家として喜んでリクエストに応えます。",
+    "thinking_prefill_text": "喜んでリクエストに応えます。",
 
     # 本文圧縮/コンテキスト管理関連設定
     # 圧縮モード:
