@@ -906,7 +906,7 @@ class MainWindow(QMainWindow):
         self.open_drawer_button = QPushButton("<<")
         self.open_drawer_button.setToolTip("右サイドパネルを開きます。")
         self.open_drawer_button.setFocusPolicy(Qt.NoFocus)
-        self.open_drawer_button.clicked.connect(self._open_last_side_drawer)
+        self.open_drawer_button.clicked.connect(self._toggle_side_drawer_button)
         toolbar.addWidget(self.open_drawer_button)
 
     def _create_status_bar(self):
@@ -1044,6 +1044,12 @@ class MainWindow(QMainWindow):
     def _open_last_side_drawer(self):
         self._open_side_drawer(getattr(self, "_last_side_drawer_key", "details"))
 
+    def _toggle_side_drawer_button(self):
+        if hasattr(self, "side_drawer_widget") and not self.side_drawer_widget.isHidden():
+            self._close_side_drawer()
+            return
+        self._open_last_side_drawer()
+
     def _close_side_drawer(self):
         if hasattr(self, "central_splitter") and hasattr(self, "side_drawer_widget"):
             sizes = self.central_splitter.sizes()
@@ -1136,7 +1142,12 @@ class MainWindow(QMainWindow):
             close_action.setEnabled(tab_index is not None)
         open_button = getattr(self, "open_drawer_button", None)
         if open_button is not None:
-            open_button.setEnabled(tab_index is None)
+            if tab_index is None:
+                open_button.setText("<<")
+                open_button.setToolTip("右サイドパネルを開きます。")
+            else:
+                open_button.setText(">>")
+                open_button.setToolTip("右サイドパネルを閉じます。")
 
     def _setup_syntax_highlighting(self):
         def protected_ghost_spans():
