@@ -16,7 +16,8 @@ SEARCH_TARGETS = {
         "あらすじ": "synopsis",
         "設定": "setting",
         "プロット": "plot",
-        "次の展開についてのメモ": "authors_note"
+        "次の展開についてのメモ": "authors_note",
+        "思考prefill": "assistant_thinking_prefill"
     }
 }
 

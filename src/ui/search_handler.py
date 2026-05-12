@@ -44,6 +44,8 @@ class SearchHandler(QObject):
             self.target_widgets["plot"] = self.main_window.plot_edit
         if hasattr(self.main_window, 'authors_note_edit'):
             self.target_widgets["authors_note"] = self.main_window.authors_note_edit
+        if hasattr(self.main_window, 'assistant_thinking_prefill_edit'):
+            self.target_widgets["assistant_thinking_prefill"] = self.main_window.assistant_thinking_prefill_edit
     
     def create_search_actions(self):
         """検索関連のアクションを作成"""

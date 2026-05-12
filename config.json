@@ -6,7 +6,7 @@
     "max_length_idea_thinking_on": 2000,
     "max_length_generate_thinking_off": 500,
     "max_length_generate_thinking_on": 1500,
-    "temperature": 1.0,
+    "temperature": 0.5,
     "min_p": 0.1,
     "top_p": 0.95,
     "top_k": 40,

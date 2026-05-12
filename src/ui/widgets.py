@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QToolButton, QFrame,
                                QScrollArea, QLineEdit, QLabel, QPushButton, QSizePolicy, # Keep QSizePolicy
                                QSpacerItem, QLayout)
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, Signal, QSize, QRect, QPoint, QEvent # Add QSize, QRect, QPoint for FlowLayout
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, Signal, QSize, QRect, QPoint, QEvent, QTimer # Add QSize, QRect, QPoint for FlowLayout
 from PySide6.QtGui import QResizeEvent
 
 class CollapsibleSection(QWidget):
@@ -105,6 +105,13 @@ class InlineCollapsibleSection(QWidget):
     def __init__(self, title: str = "", parent: QWidget | None = None):
         super().__init__(parent)
 
+        self._base_title = title
+        self._streaming_active = False
+        self._streaming_pulse = False
+        self._streaming_timer = QTimer(self)
+        self._streaming_timer.setInterval(550)
+        self._streaming_timer.timeout.connect(self._toggle_streaming_pulse)
+
         self.toggle_button = QToolButton(text=title, checkable=True, checked=False)
         self.toggle_button.setStyleSheet("QToolButton { border: none; }")
         self.toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -126,7 +133,31 @@ class InlineCollapsibleSection(QWidget):
         self.toggle_button.setChecked(expanded)
         self.toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
         self.content_widget.setVisible(expanded)
+        self._refresh_streaming_state()
         self.updateGeometry()
+
+    def set_streaming_active(self, active: bool):
+        self._streaming_active = bool(active)
+        self._streaming_pulse = False
+        if self._streaming_active:
+            if not self._streaming_timer.isActive():
+                self._streaming_timer.start()
+        else:
+            self._streaming_timer.stop()
+        self._refresh_streaming_state()
+
+    def _toggle_streaming_pulse(self):
+        self._streaming_pulse = not self._streaming_pulse
+        self._refresh_streaming_state()
+
+    def _refresh_streaming_state(self):
+        show_activity = self._streaming_active and not self.toggle_button.isChecked()
+        self.toggle_button.setProperty("streaming", show_activity)
+        self.toggle_button.setProperty("pulse", show_activity and self._streaming_pulse)
+        self.toggle_button.setText(f"{self._base_title}（出力中）" if show_activity else self._base_title)
+        self.toggle_button.style().unpolish(self.toggle_button)
+        self.toggle_button.style().polish(self.toggle_button)
+        self.toggle_button.update()
 
     def refresh_content_height(self):
         self.content_widget.updateGeometry()

@@ -259,6 +259,8 @@ class MenuHandler:
             'title': 'title_edit', 'keywords': 'keywords_widget', 'genres': 'genre_widget',
             'synopsis': 'synopsis_edit', 'setting': 'setting_edit', 'plot': 'plot_edit',
             'dialogue_level': 'dialogue_level_combo',
+            'assistant_thinking_prefill_enabled': 'assistant_thinking_prefill_checkbox',
+            'assistant_thinking_prefill': 'assistant_thinking_prefill_edit',
             'rating': 'rating_combo_details', # Add rating combo from details tab
             'authors_note': 'authors_note_edit', # Add authors_note edit
             'main_text': 'main_text_edit', 'memo': 'memo_edit'
@@ -275,6 +277,8 @@ class MenuHandler:
             "setting": self.main_window.setting_edit.toPlainText(),
             "plot": self.main_window.plot_edit.toPlainText(),
             "dialogue_level": self.main_window.dialogue_level_combo.currentText(),
+            "assistant_thinking_prefill_enabled": self.main_window.assistant_thinking_prefill_checkbox.isChecked(),
+            "assistant_thinking_prefill": self.main_window.assistant_thinking_prefill_edit.toPlainText(),
             "rating": self.main_window.rating_combo_details.currentData(), # Save selected rating data
             "authors_note": self.main_window.authors_note_edit.toPlainText(), # Add authors_note
         }
@@ -294,6 +298,8 @@ class MenuHandler:
             'title': 'title_edit', 'keywords': 'keywords_widget', 'genres': 'genre_widget',
             'synopsis': 'synopsis_edit', 'setting': 'setting_edit', 'plot': 'plot_edit',
             'authors_note': 'authors_note_edit', # Add authors_note edit check
+            'assistant_thinking_prefill_enabled': 'assistant_thinking_prefill_checkbox',
+            'assistant_thinking_prefill': 'assistant_thinking_prefill_edit',
             'dialogue_level': 'dialogue_level_combo',
             'rating': 'rating_combo_details', # Add rating combo from details tab
             'main_text': 'main_text_edit', 'memo': 'memo_edit',
@@ -312,6 +318,14 @@ class MenuHandler:
         self.main_window.setting_edit.setPlainText(details.get("setting", "") or "")
         self.main_window.plot_edit.setPlainText(details.get("plot", "") or "")
         self.main_window.authors_note_edit.setPlainText(details.get("authors_note", "") or "") # Add authors_note
+        self.main_window.assistant_thinking_prefill_checkbox.setChecked(
+            bool(details.get("assistant_thinking_prefill_enabled", False))
+        )
+        self.main_window.assistant_thinking_prefill_edit.setPlainText(
+            details.get("assistant_thinking_prefill", "") or ""
+        )
+        if hasattr(self.main_window, "_update_assistant_thinking_prefill_state"):
+            self.main_window._update_assistant_thinking_prefill_state()
         # Apply dialogue level safely
         self.main_window.dialogue_level_combo.setCurrentText(details.get("dialogue_level", "指定なし") or "指定なし")
         # Apply rating safely

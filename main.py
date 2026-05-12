@@ -199,6 +199,9 @@ class MainWindow(QMainWindow):
         self.genre_widget.tagsChanged.connect(self._schedule_token_update)
         self.rating_combo_details.currentIndexChanged.connect(self._schedule_token_update)
         self.dialogue_level_combo.currentIndexChanged.connect(self._schedule_token_update)
+        self.assistant_thinking_prefill_checkbox.toggled.connect(self._schedule_token_update)
+        self.assistant_thinking_prefill_checkbox.toggled.connect(self._update_assistant_thinking_prefill_state)
+        self.assistant_thinking_prefill_edit.textChanged.connect(self._schedule_token_update)
         self.thinking_mode_checkbox.toggled.connect(self._schedule_token_update)
 
     def _schedule_token_update(self, *args):
@@ -245,8 +248,9 @@ class MainWindow(QMainWindow):
             ):
                 yield token
         else:
+            effective_prompt = self._inject_project_thinking_prefill_into_prompt(prompt or "")
             async for token in self.kobold_client.generate_stream(
-                prompt or "",
+                effective_prompt,
                 max_length=max_length,
                 stop_sequence=stop_sequence,
                 current_mode=self.current_mode,
@@ -279,6 +283,85 @@ class MainWindow(QMainWindow):
             )
             or ""
         ).strip()
+
+    def _get_project_thinking_prefill_text(self) -> str:
+        checkbox = getattr(self, "assistant_thinking_prefill_checkbox", None)
+        editor = getattr(self, "assistant_thinking_prefill_edit", None)
+        thinking_checkbox = getattr(self, "thinking_mode_checkbox", None)
+        if (
+            checkbox is None
+            or editor is None
+            or thinking_checkbox is None
+            or not thinking_checkbox.isChecked()
+            or not checkbox.isChecked()
+        ):
+            return ""
+        return editor.toPlainText().strip()
+
+    def _build_project_thinking_prefill_block(self, text: str, settings: Optional[Dict[str, object]] = None) -> str:
+        if not text.strip():
+            return ""
+        settings = settings or load_settings()
+        strategy = self._get_prefill_thinking_strategy()
+        if strategy == "disabled":
+            return ""
+        return build_thought_block(
+            text,
+            strategy=strategy,
+            custom_prefix=settings.get("prefill_thinking_custom_prefix", ""),
+            custom_suffix=settings.get("prefill_thinking_custom_suffix", ""),
+        )
+
+    def _should_include_project_thinking_prefill(self) -> bool:
+        return bool(self._build_project_thinking_prefill_block(self._get_project_thinking_prefill_text()))
+
+    def _update_assistant_thinking_prefill_state(self):
+        checkbox = getattr(self, "assistant_thinking_prefill_checkbox", None)
+        editor = getattr(self, "assistant_thinking_prefill_edit", None)
+        transfer_button = getattr(self, "assistant_thinking_prefill_transfer_button", None)
+        thinking_checkbox = getattr(self, "thinking_mode_checkbox", None)
+        if checkbox is None or editor is None or thinking_checkbox is None:
+            return
+
+        enabled = thinking_checkbox.isEnabled() and thinking_checkbox.isChecked()
+        if not enabled and checkbox.isChecked():
+            checkbox.setChecked(False)
+        checkbox.setEnabled(enabled)
+        editor.setEnabled(enabled)
+        if transfer_button is not None:
+            transfer_button.setEnabled(enabled)
+        tooltip = (
+            "思考モードが有効な時だけ、ここに入力した思考をassistant prefillとして固定します。"
+            if enabled
+            else "思考モードを有効にすると使用できます。"
+        )
+        checkbox.setToolTip(tooltip)
+        editor.setToolTip(tooltip)
+
+    async def _get_project_thinking_prefill_token_reserve(self, base_url: str) -> int:
+        project_thought_block = self._build_project_thinking_prefill_block(
+            self._get_project_thinking_prefill_text()
+        )
+        if not project_thought_block:
+            return 0
+        token_count = await count_tokens(base_url, project_thought_block)
+        if token_count is not None:
+            return token_count
+        return max(1, len(project_thought_block) // 4)
+
+    def _inject_project_thinking_prefill_into_prompt(self, prompt: str) -> str:
+        project_thought_block = self._build_project_thinking_prefill_block(
+            self._get_project_thinking_prefill_text()
+        )
+        if not project_thought_block:
+            return prompt
+
+        marker = "[/INST]"
+        marker_index = prompt.rfind(marker)
+        if marker_index == -1:
+            return f"{prompt}{project_thought_block}"
+        insert_at = marker_index + len(marker)
+        return f"{prompt[:insert_at]}{project_thought_block}{prompt[insert_at:]}"
 
     def _get_thinking_template_preset(self) -> str:
         settings = load_settings()
@@ -421,6 +504,7 @@ class MainWindow(QMainWindow):
             enabled = False
         self.thinking_mode_checkbox.setToolTip(tooltip)
         self.thinking_mode_checkbox.setEnabled(enabled)
+        self._update_assistant_thinking_prefill_state()
 
     def _format_output_block_title(
         self,
@@ -467,10 +551,12 @@ class MainWindow(QMainWindow):
         if include_thinking:
             thinking_section = InlineCollapsibleSection("思考")
             thinking_section.setObjectName("outputBlockThinking")
+            thinking_section.toggle_button.setObjectName("outputBlockThinkingTitle")
             thinking_editor = AutoGrowingTextBrowser()
             thinking_editor.setPlaceholderText("思考ログ")
             thinking_editor.setObjectName("outputBlockThinkingEditor")
             thinking_editor.set_base_height(84)
+            setattr(thinking_editor, "_thinking_section", thinking_section)
             self._register_output_selection_tracking(thinking_editor)
             thinking_section.addWidget(thinking_editor)
             thinking_section.set_expanded(False)
@@ -504,6 +590,30 @@ class MainWindow(QMainWindow):
         self._refresh_output_block_heights(editor)
         if should_follow:
             QTimer.singleShot(0, self._scroll_output_blocks_to_bottom)
+
+    def _set_thinking_title_streaming(self, editor: Optional[QTextBrowser], active: bool):
+        if editor is None:
+            return
+        thinking_section = getattr(editor, "_thinking_section", None)
+        if thinking_section is not None and hasattr(thinking_section, "set_streaming_active"):
+            thinking_section.set_streaming_active(active)
+
+    @staticmethod
+    def _extract_prefilled_thinking_text(assistant_prefill: Optional[str]) -> str:
+        if not assistant_prefill:
+            return ""
+        if assistant_prefill.startswith(GEMMA4_THOUGHT_OPEN):
+            end_index = assistant_prefill.find("<channel|>", len(GEMMA4_THOUGHT_OPEN))
+            if end_index != -1:
+                return assistant_prefill[len(GEMMA4_THOUGHT_OPEN):end_index].strip()
+
+        think_open = "<think>\n"
+        think_close = "</think>"
+        if assistant_prefill.startswith(think_open):
+            end_index = assistant_prefill.find(think_close, len(think_open))
+            if end_index != -1:
+                return assistant_prefill[len(think_open):end_index].strip()
+        return ""
 
     def _clear_thinking_output(self):
         while self.output_blocks_layout.count() > 1:
@@ -574,6 +684,23 @@ class MainWindow(QMainWindow):
             " font-weight: 600;"
             " text-align: left;"
             "}"
+            "QToolButton#outputBlockThinkingTitle {"
+            f" background-color: {editor_bg};"
+            f" color: {muted_text};"
+            f" border: 1px solid {border};"
+            " border-radius: 6px;"
+            " padding: 6px 10px;"
+            " text-align: left;"
+            "}"
+            "QToolButton#outputBlockThinkingTitle[streaming=\"true\"] {"
+            " background-color: #fff0b3;"
+            " color: #4d3600;"
+            " border-color: #d69b00;"
+            " font-weight: 600;"
+            "}"
+            "QToolButton#outputBlockThinkingTitle[streaming=\"true\"][pulse=\"true\"] {"
+            " background-color: #ffd86b;"
+            "}"
             "QTextBrowser#outputBlockContent, QTextBrowser#outputBlockThinkingEditor {"
             f" background-color: {editor_bg};"
             f" color: {muted_text};"
@@ -634,6 +761,10 @@ class MainWindow(QMainWindow):
         stop_sequence: Optional[List[str]],
         reasoning_editor: Optional[QTextBrowser],
     ) -> str:
+        settings = load_settings()
+        strategy = self._get_prefill_thinking_strategy()
+        thinking_seed_text = self._get_thinking_prefill_text()
+
         first_pass_messages = [dict(message) for message in base_messages]
         promoted_prefill = assistant_prefill.strip()
         if first_pass_messages and first_pass_messages[-1].get("role") == "user":
@@ -652,24 +783,58 @@ class MainWindow(QMainWindow):
         generation_params = self._build_chat_generation_params(policy)
         first_pass_messages, first_pass_prefill = self._apply_thinking_template_preset(
             messages=first_pass_messages,
-            assistant_prefill=None,
+            assistant_prefill=(
+                build_open_thinking_prefill(
+                    thinking_seed_text,
+                    strategy=strategy,
+                    custom_prefix=settings.get("prefill_thinking_custom_prefix", ""),
+                )
+                if thinking_seed_text and strategy != "disabled"
+                else None
+            ),
             policy=policy,
         )
         first_pass_stop_sequence = list(stop_sequence or [])
         if self._uses_gemma4_thinking_template(self._get_thinking_template_preset()):
             if "<channel|>" not in first_pass_stop_sequence:
                 first_pass_stop_sequence.append("<channel|>")
+        open_thinking_close_marker, open_thinking_initial_text = self._get_open_thinking_prefill_state(
+            first_pass_prefill
+        )
+        if open_thinking_close_marker and open_thinking_close_marker not in first_pass_stop_sequence:
+            first_pass_stop_sequence.append(open_thinking_close_marker)
+        open_thinking_pending = ""
+        open_thinking_active = bool(open_thinking_close_marker)
         reasoning_text = ""
-        async for event in self._stream_generation_request(
-            messages=first_pass_messages,
-            assistant_prefill=first_pass_prefill,
-            max_length=max_length,
-            stop_sequence=first_pass_stop_sequence or None,
-            generation_params=generation_params,
-        ):
-            if event.reasoning_content:
-                reasoning_text += event.reasoning_content
-                self._append_to_block_editor(reasoning_editor, event.reasoning_content)
+        if open_thinking_initial_text:
+            reasoning_text += open_thinking_initial_text
+            self._append_to_block_editor(reasoning_editor, open_thinking_initial_text)
+        self._set_thinking_title_streaming(reasoning_editor, True)
+        try:
+            async for event in self._stream_generation_request(
+                messages=first_pass_messages,
+                assistant_prefill=first_pass_prefill,
+                max_length=max_length,
+                stop_sequence=first_pass_stop_sequence or None,
+                generation_params=generation_params,
+            ):
+                if event.content and open_thinking_active and open_thinking_close_marker:
+                    reasoning_part, _visible_part, open_thinking_pending, open_thinking_active = self._split_open_thinking_content(
+                        event.content,
+                        open_thinking_close_marker,
+                        open_thinking_pending,
+                    )
+                    if reasoning_part:
+                        reasoning_text += reasoning_part
+                        self._append_to_block_editor(reasoning_editor, reasoning_part)
+                if event.reasoning_content:
+                    reasoning_text += event.reasoning_content
+                    self._append_to_block_editor(reasoning_editor, event.reasoning_content)
+            if open_thinking_active and open_thinking_pending:
+                reasoning_text += open_thinking_pending
+                self._append_to_block_editor(reasoning_editor, open_thinking_pending)
+        finally:
+            self._set_thinking_title_streaming(reasoning_editor, False)
 
         if not reasoning_text.strip():
             raise KoboldClientError(THINKING_OUTPUT_MISSING_MESSAGE)
@@ -696,6 +861,10 @@ class MainWindow(QMainWindow):
 
         final_prefill = extracted_prefill
         settings = load_settings()
+        project_thought_block = self._build_project_thinking_prefill_block(
+            self._get_project_thinking_prefill_text(),
+            settings=settings,
+        )
         strategy = settings.get("prefill_thinking_strategy", "disabled")
         if self._uses_gemma4_thinking_template(self._get_thinking_template_preset()):
             strategy = THINKING_STRATEGY_GEMMA4_CHANNEL
@@ -706,6 +875,7 @@ class MainWindow(QMainWindow):
             and strategy != "disabled"
             and policy.effective_enabled
             and not final_prefill
+            and not project_thought_block
         ):
             thinking_seed_prefill = build_open_thinking_prefill(
                 thinking_seed_text,
@@ -713,7 +883,18 @@ class MainWindow(QMainWindow):
                 custom_prefix=settings.get("prefill_thinking_custom_prefix", ""),
             )
 
-        if policy.requires_two_pass_prefill and extracted_prefill:
+        if project_thought_block:
+            final_prefill = f"{project_thought_block}{final_prefill or ''}"
+            if policy.effective_enabled or policy.requires_two_pass_prefill:
+                policy = ThinkingRequestPolicy(
+                    requested_by_user=policy.requested_by_user,
+                    allowed_by_policy=policy.allowed_by_policy,
+                    effective_enabled=False,
+                    disable_reason=policy.disable_reason,
+                    requires_two_pass_prefill=False,
+                    encapsulate_thinking=False,
+                )
+        elif policy.requires_two_pass_prefill and extracted_prefill:
             reasoning_text = await self._run_two_pass_prefill_reasoning(
                 request_kind=request_kind,
                 base_messages=base_messages,
@@ -778,7 +959,11 @@ class MainWindow(QMainWindow):
             )
             block_editor, thinking_editor = self._create_output_block(
                 block_title,
-                include_thinking=initial_policy.effective_enabled or initial_policy.requires_two_pass_prefill,
+                include_thinking=(
+                    initial_policy.effective_enabled
+                    or initial_policy.requires_two_pass_prefill
+                    or self._should_include_project_thinking_prefill()
+                ),
             )
             self.output_block_counter += 1
             prepared_messages, prepared_prefill, policy, prepared_params = await self._prepare_chat_request_with_thinking(
@@ -799,10 +984,15 @@ class MainWindow(QMainWindow):
                     has_assistant_prefill=bool(assistant_prefill),
                 )
             )
-            block_editor, _ = self._create_output_block(
-                block_title,
-                include_thinking=False,
+            project_thought_block = self._build_project_thinking_prefill_block(
+                self._get_project_thinking_prefill_text()
             )
+            block_editor, thinking_editor = self._create_output_block(
+                block_title,
+                include_thinking=bool(project_thought_block),
+            )
+            if project_thought_block:
+                assistant_prefill = project_thought_block
             self.output_block_counter += 1
 
         open_thinking_close_marker, open_thinking_initial_text = self._get_open_thinking_prefill_state(
@@ -811,47 +1001,69 @@ class MainWindow(QMainWindow):
         open_thinking_pending = ""
         open_thinking_active = bool(open_thinking_close_marker)
         backend_reasoning_detected = False
+        prefilled_thinking_text = self._extract_prefilled_thinking_text(assistant_prefill)
+        if prefilled_thinking_text:
+            reasoning_text += prefilled_thinking_text
+            existing_thinking_text = thinking_editor.toPlainText().strip() if thinking_editor is not None else ""
+            if not existing_thinking_text:
+                self._append_to_block_editor(thinking_editor, prefilled_thinking_text)
         if open_thinking_initial_text:
             reasoning_text += open_thinking_initial_text
             self._append_to_block_editor(thinking_editor, open_thinking_initial_text)
+        thinking_title_active = False
+        try:
+            if open_thinking_active:
+                self._set_thinking_title_streaming(thinking_editor, True)
+                thinking_title_active = True
 
-        async for event in self._stream_generation_request(
-            prompt=prompt,
-            messages=messages,
-            assistant_prefill=assistant_prefill,
-            max_length=max_length,
-            stop_sequence=stop_sequence,
-            generation_params=generation_params,
-        ):
-            if event.content:
-                if open_thinking_active and open_thinking_close_marker and not backend_reasoning_detected:
-                    reasoning_part, visible_part, open_thinking_pending, open_thinking_active = self._split_open_thinking_content(
-                        event.content,
-                        open_thinking_close_marker,
-                        open_thinking_pending,
-                    )
-                    if reasoning_part:
-                        reasoning_text += reasoning_part
-                        self._append_to_block_editor(thinking_editor, reasoning_part)
-                    if visible_part:
-                        content_text += visible_part
+            async for event in self._stream_generation_request(
+                prompt=prompt,
+                messages=messages,
+                assistant_prefill=assistant_prefill,
+                max_length=max_length,
+                stop_sequence=stop_sequence,
+                generation_params=generation_params,
+            ):
+                if event.content:
+                    if open_thinking_active and open_thinking_close_marker and not backend_reasoning_detected:
+                        reasoning_part, visible_part, open_thinking_pending, open_thinking_active = self._split_open_thinking_content(
+                            event.content,
+                            open_thinking_close_marker,
+                            open_thinking_pending,
+                        )
+                        if reasoning_part:
+                            reasoning_text += reasoning_part
+                            self._append_to_block_editor(thinking_editor, reasoning_part)
+                        if visible_part:
+                            if thinking_title_active:
+                                self._set_thinking_title_streaming(thinking_editor, False)
+                                thinking_title_active = False
+                            content_text += visible_part
+                            if append_output:
+                                self._append_to_output(visible_part)
+                                self._append_to_block_editor(block_editor, visible_part)
+                    else:
+                        if thinking_title_active and backend_reasoning_detected:
+                            self._set_thinking_title_streaming(thinking_editor, False)
+                            thinking_title_active = False
+                        content_text += event.content
                         if append_output:
-                            self._append_to_output(visible_part)
-                            self._append_to_block_editor(block_editor, visible_part)
-                else:
-                    content_text += event.content
-                    if append_output:
-                        self._append_to_output(event.content)
-                        self._append_to_block_editor(block_editor, event.content)
-            if event.reasoning_content:
-                backend_reasoning_detected = True
-                reasoning_text += event.reasoning_content
-                self._append_to_block_editor(thinking_editor, event.reasoning_content)
-            await asyncio.sleep(0.001)
+                            self._append_to_output(event.content)
+                            self._append_to_block_editor(block_editor, event.content)
+                if event.reasoning_content:
+                    backend_reasoning_detected = True
+                    if not thinking_title_active:
+                        self._set_thinking_title_streaming(thinking_editor, True)
+                        thinking_title_active = True
+                    reasoning_text += event.reasoning_content
+                    self._append_to_block_editor(thinking_editor, event.reasoning_content)
+                await asyncio.sleep(0.001)
 
-        if open_thinking_active and open_thinking_pending and not backend_reasoning_detected:
-            reasoning_text += open_thinking_pending
-            self._append_to_block_editor(thinking_editor, open_thinking_pending)
+            if open_thinking_active and open_thinking_pending and not backend_reasoning_detected:
+                reasoning_text += open_thinking_pending
+                self._append_to_block_editor(thinking_editor, open_thinking_pending)
+        finally:
+            self._set_thinking_title_streaming(thinking_editor, False)
 
         if self._use_chat_completions_mode() and generation_params and generation_params.get("encapsulate_thinking") and not reasoning_text.strip():
             raise KoboldClientError(THINKING_OUTPUT_MISSING_MESSAGE)
@@ -913,6 +1125,7 @@ class MainWindow(QMainWindow):
         self.thinking_mode_checkbox.setChecked(False)
         self.thinking_mode_checkbox.setFocusPolicy(Qt.NoFocus)
         self.thinking_mode_checkbox.toggled.connect(self._update_idea_fast_mode_state)
+        self.thinking_mode_checkbox.toggled.connect(self._update_assistant_thinking_prefill_state)
         toolbar.addWidget(self.thinking_mode_checkbox)
         self._update_thinking_checkbox_ui()
         
@@ -1022,6 +1235,7 @@ class MainWindow(QMainWindow):
             (self.setting_edit, None),
             (self.plot_edit, None),
             (self.authors_note_edit, None),
+            (self.assistant_thinking_prefill_edit, None),
             (self.memo_edit, None),
         ]
         for edit, protected_provider in editable_edits:
@@ -1194,6 +1408,30 @@ class MainWindow(QMainWindow):
         dialogue_section.content_layout.addLayout(dialogue_layout)
         details_layout.addWidget(dialogue_section)
 
+        # Assistant thinking prefill
+        assistant_thinking_section = CollapsibleSection("思考prefill (生成時)")
+        assistant_thinking_controls = QHBoxLayout()
+        self.assistant_thinking_prefill_checkbox = QCheckBox("思考を固定（思考有効時のみ）")
+        self.assistant_thinking_prefill_checkbox.setToolTip(
+            "思考モードが有効な時だけ、ここに入力した思考をassistant prefillとして固定します。"
+        )
+        self.assistant_thinking_prefill_transfer_button = QPushButton("← 選択思考を転記")
+        self.assistant_thinking_prefill_transfer_button.setFocusPolicy(Qt.NoFocus)
+        self.assistant_thinking_prefill_transfer_button.clicked.connect(self._transfer_output_to_thinking_prefill)
+        assistant_thinking_controls.addWidget(self.assistant_thinking_prefill_checkbox)
+        assistant_thinking_controls.addWidget(self.assistant_thinking_prefill_transfer_button)
+        assistant_thinking_controls.addStretch()
+
+        self.assistant_thinking_prefill_edit = QPlainTextEdit()
+        self.assistant_thinking_prefill_edit.setPlaceholderText(
+            "出力欄の思考など、あらかじめ流し込みたい思考を入力..."
+        )
+        self.assistant_thinking_prefill_edit.setMinimumHeight(90)
+        assistant_thinking_section.content_layout.addLayout(assistant_thinking_controls)
+        assistant_thinking_section.addWidget(self.assistant_thinking_prefill_edit)
+        details_layout.addWidget(assistant_thinking_section)
+        self._update_assistant_thinking_prefill_state()
+
         details_layout.addStretch()
 
     def _create_memo_tab(self):
@@ -1361,7 +1599,9 @@ class MainWindow(QMainWindow):
                 try:
                     # 圧縮開始前にステータス表示
                     QTimer.singleShot(0, lambda: self.status_bar.showMessage("本文圧縮中..."))
-                    
+                    prefill_token_reserve = await self._get_project_thinking_prefill_token_reserve(base_url)
+                    compression_max_len_generate = max_len_generate + prefill_token_reserve
+
                     if self._use_chat_completions_mode():
                         prompt = None
                         messages, total_tokens, is_overflow, original_chars, compressed_chars = await build_chat_messages_with_compression(
@@ -1371,7 +1611,7 @@ class MainWindow(QMainWindow):
                             ui_data=ui_data,
                             cont_prompt_order=cont_order,
                             compression_mode=compression_mode,
-                            max_length_generate=max_len_generate,
+                            max_length_generate=compression_max_len_generate,
                         )
                     else:
                         messages = None
@@ -1382,7 +1622,7 @@ class MainWindow(QMainWindow):
                             ui_data=ui_data,
                             cont_prompt_order=cont_order,
                             compression_mode=compression_mode,
-                            max_length_generate=max_len_generate,
+                            max_length_generate=compression_max_len_generate,
                         )
                     
                     # 圧縮後、元の生成中ステータスに戻す
@@ -1799,7 +2039,9 @@ class MainWindow(QMainWindow):
 
                 # 圧縮開始前にステータス表示
                 QTimer.singleShot(0, lambda: self.status_bar.showMessage("本文圧縮中..."))
-                
+                prefill_token_reserve = await self._get_project_thinking_prefill_token_reserve(base_url)
+                compression_max_len_generate = max_len_generate + prefill_token_reserve
+
                 if self._use_chat_completions_mode():
                     prompt = None
                     messages, total_tokens, is_overflow, original_chars, compressed_chars = await build_chat_messages_with_compression(
@@ -1809,7 +2051,7 @@ class MainWindow(QMainWindow):
                         ui_data=ui_data,
                         cont_prompt_order=cont_order,
                         compression_mode=compression_mode,
-                        max_length_generate=max_len_generate,
+                        max_length_generate=compression_max_len_generate,
                     )
                 else:
                     messages = None
@@ -1820,7 +2062,7 @@ class MainWindow(QMainWindow):
                         ui_data=ui_data,
                         cont_prompt_order=cont_order,
                         compression_mode=compression_mode,
-                        max_length_generate=max_len_generate,
+                        max_length_generate=compression_max_len_generate,
                     )
                 
                 # 圧縮後、元の無限生成中ステータスに戻す
@@ -2075,6 +2317,8 @@ class MainWindow(QMainWindow):
         settings = load_settings()
         system_prompt = settings.get("system_prompt", "")
         enable_thinking = self.thinking_mode_checkbox.isChecked()
+        assistant_thinking_prefill_enabled = self.assistant_thinking_prefill_checkbox.isChecked()
+        assistant_thinking_prefill = self.assistant_thinking_prefill_edit.toPlainText()
 
         return {
             "metadata": metadata,
@@ -2082,6 +2326,8 @@ class MainWindow(QMainWindow):
             "authors_note": authors_note,
             "system_prompt": system_prompt,
             "enable_thinking": enable_thinking,
+            "assistant_thinking_prefill_enabled": assistant_thinking_prefill_enabled,
+            "assistant_thinking_prefill": assistant_thinking_prefill,
         }
 
     async def _cleanup(self): # Make cleanup async
@@ -2153,6 +2399,20 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("選択範囲をメモエリアに転記しました。", 2000)
         else:
             self.status_bar.showMessage("出力エリアでテキストが選択されていません。", 2000) # Message updated
+
+    @Slot()
+    def _transfer_output_to_thinking_prefill(self):
+        """Transfers selected output/thinking text to the assistant thinking prefill field."""
+        if not self.thinking_mode_checkbox.isChecked():
+            self.status_bar.showMessage("思考モードを有効にすると思考を固定できます。", 2000)
+            return
+        selected_text = self._get_selected_output_text()
+        if not selected_text:
+            self.status_bar.showMessage("出力エリアで転記したい思考を選択してください。", 2000)
+            return
+        self.assistant_thinking_prefill_edit.setPlainText(selected_text)
+        self.assistant_thinking_prefill_checkbox.setChecked(True)
+        self.status_bar.showMessage("選択範囲を思考prefillに転記しました。", 2000)
 
     @Slot()
     def _transfer_idea_to_details(self, metadata_key: str):
@@ -2429,6 +2689,15 @@ class MainWindow(QMainWindow):
                     ui_data=ui_data,
                     cont_prompt_order=cont_order
                 )
+                project_thought_block = self._build_project_thinking_prefill_block(
+                    self._get_project_thinking_prefill_text()
+                )
+                if project_thought_block:
+                    if messages and messages[-1].get("role") == "assistant":
+                        messages[-1] = dict(messages[-1])
+                        messages[-1]["content"] = f"{project_thought_block}{messages[-1].get('content', '')}"
+                    else:
+                        messages.append({"role": "assistant", "content": project_thought_block})
                 token_count_text = serialize_chat_messages_for_token_count(messages)
             else:
                 token_count_text = build_prompt(
