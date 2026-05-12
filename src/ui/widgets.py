@@ -281,7 +281,7 @@ class TagWidget(QWidget):
         self.tag_input = QLineEdit()
         self.tag_input.setPlaceholderText("タグを入力 (スペース区切り)")
         self.tag_input.returnPressed.connect(self._add_tags_from_input)
-        add_button = QPushButton("追加")
+        add_button = QPushButton("反映")
         add_button.clicked.connect(self._add_tags_from_input)
         self.transfer_button = QPushButton("← 転記") # Transfer button
 

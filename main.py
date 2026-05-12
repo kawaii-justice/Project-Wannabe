@@ -870,8 +870,12 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        self.details_drawer_action = QAction("詳細", self)
+        side_panel_label = QLabel("サイドパネル:")
+        toolbar.addWidget(side_panel_label)
+
+        self.details_drawer_action = QAction("詳細情報", self)
         self.details_drawer_action.setCheckable(True)
+        self.details_drawer_action.setToolTip("タイトル、キーワード、設定、プロットなどの詳細情報パネルを表示します。")
         self.details_drawer_action.triggered.connect(
             lambda checked: self._toggle_side_drawer("details", checked)
         )
@@ -879,10 +883,16 @@ class MainWindow(QMainWindow):
 
         self.memo_drawer_action = QAction("メモ", self)
         self.memo_drawer_action.setCheckable(True)
+        self.memo_drawer_action.setToolTip("メモパネルを表示します。")
         self.memo_drawer_action.triggered.connect(
             lambda checked: self._toggle_side_drawer("memo", checked)
         )
         toolbar.addAction(self.memo_drawer_action)
+
+        self.close_drawer_action = QAction("閉じる", self)
+        self.close_drawer_action.setToolTip("サイドパネルを閉じて本文と生成候補を広く表示します。")
+        self.close_drawer_action.triggered.connect(self._close_side_drawer)
+        toolbar.addAction(self.close_drawer_action)
 
         # スペーサーを追加して右端にショートカット説明を配置
         spacer = QWidget()
@@ -905,8 +915,13 @@ class MainWindow(QMainWindow):
     def _create_central_widget(self):
         self.central_splitter = QSplitter(Qt.Horizontal)
         self.setCentralWidget(self.central_splitter)
+        self._main_pane_min_width = 320
+        self._output_pane_min_width = 280
+        self._side_drawer_min_width = 260
+        self._last_side_drawer_width = 320
 
         main_text_container = QWidget()
+        main_text_container.setMinimumWidth(self._main_pane_min_width)
         main_text_layout = QVBoxLayout(main_text_container)
         main_text_layout.setContentsMargins(0, 5, 4, 0)
         main_text_layout.setSpacing(5)
@@ -915,6 +930,7 @@ class MainWindow(QMainWindow):
         main_text_layout.addWidget(self.main_text_edit)
 
         output_container = QWidget()
+        output_container.setMinimumWidth(self._output_pane_min_width)
         output_layout = QVBoxLayout(output_container)
         output_layout.setContentsMargins(4, 5, 4, 0)
         output_layout.setSpacing(5)
@@ -962,13 +978,14 @@ class MainWindow(QMainWindow):
         self.output_blocks.update_auto_follow()
 
         self.side_drawer_widget = QWidget()
+        self.side_drawer_widget.setMinimumWidth(self._side_drawer_min_width)
         side_drawer_layout = QVBoxLayout(self.side_drawer_widget)
         side_drawer_layout.setContentsMargins(4, 5, 0, 0)
         side_drawer_layout.setSpacing(5)
         side_drawer_header = QHBoxLayout()
         side_drawer_header.setContentsMargins(0, 0, 0, 0)
-        self.side_drawer_title_label = QLabel("詳細")
-        side_drawer_close_button = QPushButton("閉じる")
+        self.side_drawer_title_label = QLabel("サイドパネル: 詳細情報")
+        side_drawer_close_button = QPushButton("パネルを閉じる")
         side_drawer_close_button.setFocusPolicy(Qt.NoFocus)
         side_drawer_close_button.clicked.connect(self._close_side_drawer)
         side_drawer_header.addWidget(self.side_drawer_title_label)
@@ -982,12 +999,20 @@ class MainWindow(QMainWindow):
         self.right_tab_widget.addTab(self.memo_tab_widget, "メモ")
         self.right_tab_widget.currentChanged.connect(self._on_side_drawer_tab_changed)
         side_drawer_layout.addWidget(self.right_tab_widget)
-        self.side_drawer_widget.hide()
 
         self.central_splitter.addWidget(main_text_container)
         self.central_splitter.addWidget(output_container)
         self.central_splitter.addWidget(self.side_drawer_widget)
-        self.central_splitter.setSizes([760, 430, 0])
+        self.central_splitter.setChildrenCollapsible(False)
+        self.central_splitter.setCollapsible(0, False)
+        self.central_splitter.setCollapsible(1, False)
+        self.central_splitter.setCollapsible(2, False)
+        self.central_splitter.setStretchFactor(0, 3)
+        self.central_splitter.setStretchFactor(1, 2)
+        self.central_splitter.setStretchFactor(2, 0)
+        self.central_splitter.splitterMoved.connect(self._on_central_splitter_moved)
+        self.central_splitter.setSizes([620, 360, 320])
+        self._sync_side_drawer_actions(0)
 
     def _toggle_side_drawer(self, drawer_key: str, checked: bool):
         if not checked:
@@ -1000,24 +1025,87 @@ class MainWindow(QMainWindow):
             return
 
         tab_index = 0 if drawer_key == "details" else 1
+        was_hidden = self.side_drawer_widget.isHidden()
         self.right_tab_widget.setCurrentIndex(tab_index)
         self.side_drawer_widget.show()
-        self.side_drawer_title_label.setText("詳細" if tab_index == 0 else "メモ")
+        self.side_drawer_title_label.setText("サイドパネル: 詳細情報" if tab_index == 0 else "サイドパネル: メモ")
         self._sync_side_drawer_actions(tab_index)
-        if hasattr(self, "central_splitter"):
-            self.central_splitter.setSizes([690, 410, 320])
+        if was_hidden and hasattr(self, "central_splitter"):
+            self.central_splitter.setSizes(self._sizes_with_open_drawer())
 
     def _close_side_drawer(self):
+        if hasattr(self, "central_splitter") and hasattr(self, "side_drawer_widget"):
+            sizes = self.central_splitter.sizes()
+            if len(sizes) >= 3 and sizes[2] > 0:
+                self._last_side_drawer_width = max(self._side_drawer_min_width, sizes[2])
+            closed_sizes = self._sizes_with_closed_drawer()
+        else:
+            closed_sizes = None
         if hasattr(self, "side_drawer_widget"):
             self.side_drawer_widget.hide()
         self._sync_side_drawer_actions(None)
-        if hasattr(self, "central_splitter"):
-            self.central_splitter.setSizes([760, 430, 0])
+        if closed_sizes is not None:
+            self.central_splitter.setSizes(closed_sizes)
+
+    def _sizes_with_open_drawer(self) -> list[int]:
+        sizes = self.central_splitter.sizes()
+        if len(sizes) < 3:
+            return [self._main_pane_min_width, self._output_pane_min_width, self._last_side_drawer_width]
+
+        main_width = max(sizes[0], self._main_pane_min_width)
+        output_width = max(sizes[1], self._output_pane_min_width)
+        total_width = max(sum(sizes), self.central_splitter.width())
+        drawer_width = max(self._side_drawer_min_width, self._last_side_drawer_width)
+        max_drawer_width = max(
+            self._side_drawer_min_width,
+            total_width - self._main_pane_min_width - self._output_pane_min_width,
+        )
+        drawer_width = min(drawer_width, max_drawer_width)
+        remaining_width = max(
+            self._main_pane_min_width + self._output_pane_min_width,
+            total_width - drawer_width,
+        )
+        return self._distribute_main_output_widths(main_width, output_width, remaining_width) + [drawer_width]
+
+    def _sizes_with_closed_drawer(self) -> list[int]:
+        sizes = self.central_splitter.sizes()
+        if len(sizes) < 3:
+            return [self._main_pane_min_width, self._output_pane_min_width, 0]
+
+        main_width = max(sizes[0], self._main_pane_min_width)
+        output_width = max(sizes[1], self._output_pane_min_width)
+        total_width = max(sum(sizes), self.central_splitter.width())
+        main_output_sizes = self._distribute_main_output_widths(main_width, output_width, total_width)
+        return main_output_sizes + [0]
+
+    def _distribute_main_output_widths(self, main_width: int, output_width: int, total_width: int) -> list[int]:
+        pair_width = max(main_width + output_width, 1)
+        target_main = int(total_width * main_width / pair_width)
+        target_output = total_width - target_main
+
+        if target_main < self._main_pane_min_width:
+            target_main = self._main_pane_min_width
+            target_output = total_width - target_main
+        if target_output < self._output_pane_min_width:
+            target_output = self._output_pane_min_width
+            target_main = total_width - target_output
+        if target_main < self._main_pane_min_width:
+            target_main = self._main_pane_min_width
+        return [target_main, target_output]
+
+    def _on_central_splitter_moved(self, *_args):
+        if not hasattr(self, "side_drawer_widget") or self.side_drawer_widget.isHidden():
+            return
+        sizes = self.central_splitter.sizes()
+        if len(sizes) >= 3 and sizes[2] > 0:
+            self._last_side_drawer_width = max(self._side_drawer_min_width, sizes[2])
+        elif len(sizes) >= 3 and sizes[2] == 0:
+            self._close_side_drawer()
 
     def _on_side_drawer_tab_changed(self, tab_index: int):
-        if not hasattr(self, "side_drawer_widget") or not self.side_drawer_widget.isVisible():
+        if not hasattr(self, "side_drawer_widget") or self.side_drawer_widget.isHidden():
             return
-        self.side_drawer_title_label.setText("詳細" if tab_index == 0 else "メモ")
+        self.side_drawer_title_label.setText("サイドパネル: 詳細情報" if tab_index == 0 else "サイドパネル: メモ")
         self._sync_side_drawer_actions(tab_index)
 
     def _sync_side_drawer_actions(self, tab_index: Optional[int]):
@@ -1031,6 +1119,9 @@ class MainWindow(QMainWindow):
             action.blockSignals(True)
             action.setChecked(bool(should_check))
             action.blockSignals(False)
+        close_action = getattr(self, "close_drawer_action", None)
+        if close_action is not None:
+            close_action.setEnabled(tab_index is not None)
 
     def _setup_syntax_highlighting(self):
         def protected_ghost_spans():
