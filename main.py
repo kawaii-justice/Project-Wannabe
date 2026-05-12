@@ -2,17 +2,18 @@ import sys
 import asyncio
 import qasync # Import qasync
 import re # Import regex module
-from PySide6.QtWidgets import (QApplication, QMainWindow, QMenuBar, QStatusBar,
-                               QSplitter, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar,
+                               QSplitter, QWidget, QVBoxLayout, QHBoxLayout,
                                QTabWidget, QScrollArea, QLineEdit, QPushButton, QMessageBox,
-                               QPlainTextEdit, QTextBrowser, QToolBar, QDialog, QLineEdit, QLabel, QComboBox, # Add QLabel, QComboBox
-                               QCheckBox, QPlainTextEdit, QSizePolicy) # Ensure QPlainTextEdit is imported, Add QCheckBox, QSizePolicy
+                               QPlainTextEdit, QTextBrowser, QToolBar, QDialog, QLabel, QComboBox,
+                               QCheckBox, QSizePolicy)
 from PySide6.QtCore import Qt, Slot, QTimer, QEvent # Add QEvent
-from PySide6.QtGui import QTextCursor, QAction, QActionGroup, QFont, QKeyEvent, QPalette, QColor, QTextOption # Add QKeyEvent
+from PySide6.QtGui import QTextCursor, QAction, QActionGroup
 from typing import Dict, Optional, List # Add Optional and List here
 
 # Correctly import custom widgets and other modules
-from src.ui.widgets import CollapsibleSection, InlineCollapsibleSection, TagWidget
+from src.ui.widgets import CollapsibleSection, TagWidget
+from src.ui.output_blocks import OutputBlockManager
 from src.ui.dialogs import KoboldConfigDialog, GenerationParamsDialog, ChatTemplateModeStartupDialog
 from src.core.kobold_client import KoboldClient, KoboldClientError, ChatStreamEvent
 from src.core.prompt_builder import (
@@ -52,76 +53,6 @@ GEMMA4_THOUGHT_EMPTY = "<|channel>thought\n<channel|>"
 THINKING_OUTPUT_MISSING_MESSAGE = "思考を出力できませんでした。Koboldの設定などを見直してください。"
 
 
-class AutoGrowingTextBrowser(QTextBrowser):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._resize_margin = 10
-        self._resizing = False
-        self._resize_start_y = 0
-        self._initial_height = 0
-        self._base_height = 60
-        self._manual_min_height = 0
-        self.setMinimumHeight(60)
-        self.setReadOnly(True)
-        self.setUndoRedoEnabled(False)
-        self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.textChanged.connect(self._update_height_to_contents)
-        self.document().documentLayout().documentSizeChanged.connect(lambda _size: self._update_height_to_contents())
-
-    def set_base_height(self, height: int):
-        self._base_height = max(self.minimumHeight(), height)
-        self._update_height_to_contents()
-
-    def _update_height_to_contents(self):
-        doc_layout = self.document().documentLayout()
-        doc_height = int(doc_layout.documentSize().height()) if doc_layout is not None else 0
-        if doc_height <= 0:
-            line_height = self.fontMetrics().lineSpacing()
-            doc_height = max(1, self.document().blockCount()) * line_height
-        margins = self.contentsMargins()
-        frame = self.frameWidth() * 2
-        padding = margins.top() + margins.bottom() + 18
-        target_height = max(self._base_height, self._manual_min_height, doc_height + frame + padding)
-        self.setFixedHeight(target_height)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        QTimer.singleShot(0, self._update_height_to_contents)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and event.position().y() >= self.viewport().height() - self._resize_margin:
-            self._resizing = True
-            self._resize_start_y = int(event.globalPosition().y())
-            self._initial_height = self.height()
-            self.viewport().setCursor(Qt.SizeVerCursor)
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._resizing:
-            delta = int(event.globalPosition().y()) - self._resize_start_y
-            self._manual_min_height = max(self.minimumHeight(), self._initial_height + delta)
-            self._update_height_to_contents()
-            event.accept()
-            return
-        if event.position().y() >= self.viewport().height() - self._resize_margin:
-            self.viewport().setCursor(Qt.SizeVerCursor)
-        else:
-            self.viewport().unsetCursor()
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if self._resizing and event.button() == Qt.LeftButton:
-            self._resizing = False
-            self.viewport().unsetCursor()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -137,9 +68,6 @@ class MainWindow(QMainWindow):
         self.current_mode = "generate" # Initial mode: "generate" or "idea"
         self.infinite_generation_prompt = "" # Store prompt for infinite loop
         self.idea_item_key_map = {name_ja: key for key, name_ja in METADATA_MAP.items() if key in IDEA_ITEM_ORDER} # Map JA name to key
-        self._output_block_widgets = []
-        self._last_output_selection = ""
-        self._output_blocks_auto_follow = True
 
         # Instantiate MenuHandler
         self.menu_handler = MenuHandler(self)
@@ -522,82 +450,6 @@ class MainWindow(QMainWindow):
     def _get_output_task_label(self) -> str:
         return "アイデア" if self.current_mode == "idea" else "小説"
 
-    def _refresh_output_block_heights(self, widget: Optional[QWidget]):
-        current = widget
-        while current is not None:
-            if isinstance(current, (CollapsibleSection, InlineCollapsibleSection)):
-                current.refresh_content_height()
-            current = current.parentWidget()
-
-    def _capture_output_selection(self, widget: QWidget):
-        selected = self._selected_text_from_widget(widget)
-        if selected:
-            self._last_output_selection = selected
-
-    def _register_output_selection_tracking(self, widget: QTextBrowser):
-        widget.copyAvailable.connect(lambda available, source=widget: self._capture_output_selection(source) if available else None)
-        widget.selectionChanged.connect(lambda source=widget: self._capture_output_selection(source))
-
-    def _create_output_block(self, title: str, *, include_thinking: bool) -> tuple[QTextBrowser, Optional[QTextBrowser]]:
-        should_follow = self._should_auto_scroll_output_blocks()
-        block_widget = InlineCollapsibleSection(title)
-        block_widget.setObjectName("outputBlock")
-        block_widget.toggle_button.setObjectName("outputBlockTitle")
-        block_layout = block_widget.content_layout
-        block_layout.setContentsMargins(0, 0, 0, 12)
-        block_layout.setSpacing(6)
-
-        thinking_editor: Optional[QTextBrowser] = None
-        if include_thinking:
-            thinking_section = InlineCollapsibleSection("思考")
-            thinking_section.setObjectName("outputBlockThinking")
-            thinking_section.toggle_button.setObjectName("outputBlockThinkingTitle")
-            thinking_editor = AutoGrowingTextBrowser()
-            thinking_editor.setPlaceholderText("思考ログ")
-            thinking_editor.setObjectName("outputBlockThinkingEditor")
-            thinking_editor.set_base_height(84)
-            setattr(thinking_editor, "_thinking_section", thinking_section)
-            self._register_output_selection_tracking(thinking_editor)
-            thinking_section.addWidget(thinking_editor)
-            thinking_section.set_expanded(False)
-            block_layout.addWidget(thinking_section)
-
-        content_editor = AutoGrowingTextBrowser()
-        content_editor.setPlaceholderText("出力")
-        content_editor.setObjectName("outputBlockContent")
-        content_editor.set_base_height(96)
-        self._register_output_selection_tracking(content_editor)
-        block_layout.addWidget(content_editor)
-
-        insert_index = max(0, self.output_blocks_layout.count() - 1)
-        self.output_blocks_layout.insertWidget(insert_index, block_widget)
-        self._output_block_widgets.append(block_widget)
-        self._apply_output_block_style(block_widget)
-        block_widget.set_expanded(True)
-        block_widget.refresh_content_height()
-        if should_follow:
-            QTimer.singleShot(0, self._scroll_output_blocks_to_bottom)
-        return content_editor, thinking_editor
-
-    def _append_to_block_editor(self, editor: Optional[QTextBrowser], text: str):
-        if editor is None or not text:
-            return
-        should_follow = self._should_auto_scroll_output_blocks()
-        cursor = editor.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(text)
-        editor.setTextCursor(cursor)
-        self._refresh_output_block_heights(editor)
-        if should_follow:
-            QTimer.singleShot(0, self._scroll_output_blocks_to_bottom)
-
-    def _set_thinking_title_streaming(self, editor: Optional[QTextBrowser], active: bool):
-        if editor is None:
-            return
-        thinking_section = getattr(editor, "_thinking_section", None)
-        if thinking_section is not None and hasattr(thinking_section, "set_streaming_active"):
-            thinking_section.set_streaming_active(active)
-
     @staticmethod
     def _extract_prefilled_thinking_text(assistant_prefill: Optional[str]) -> str:
         if not assistant_prefill:
@@ -616,129 +468,16 @@ class MainWindow(QMainWindow):
         return ""
 
     def _clear_thinking_output(self):
-        while self.output_blocks_layout.count() > 1:
-            item = self.output_blocks_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._output_block_widgets.clear()
-
-    def _should_auto_scroll_output_blocks(self) -> bool:
-        return bool(getattr(self, "_output_blocks_auto_follow", False))
-
-    def _scroll_output_blocks_to_bottom(self):
-        if not hasattr(self, "output_blocks_scroll"):
-            return
-        v_bar = self.output_blocks_scroll.verticalScrollBar()
-        v_bar.setValue(v_bar.maximum())
-
-    def _update_output_blocks_auto_follow(self):
-        if not hasattr(self, "output_blocks_scroll"):
-            self._output_blocks_auto_follow = False
-            return
-        v_bar = self.output_blocks_scroll.verticalScrollBar()
-        self._output_blocks_auto_follow = v_bar.value() >= v_bar.maximum() - 12
-
-    def _on_output_blocks_scroll_changed(self, *_args):
-        self._update_output_blocks_auto_follow()
-
-    def _on_output_blocks_range_changed(self, *_args):
-        if self._should_auto_scroll_output_blocks():
-            QTimer.singleShot(0, self._scroll_output_blocks_to_bottom)
-            QTimer.singleShot(16, self._scroll_output_blocks_to_bottom)
-
-    def _apply_output_block_style(self, block_widget: Optional[QWidget] = None):
-        blocks = [block_widget] if block_widget is not None else list(self._output_block_widgets)
-        palette = QApplication.palette()
-        window = palette.color(QPalette.Window)
-        base = palette.color(QPalette.Base)
-        button = palette.color(QPalette.Button)
-        text = palette.color(QPalette.Text)
-        mid = palette.color(QPalette.Mid)
-
-        def soften(color: QColor, amount: int, lighter: bool) -> str:
-            tuned = color.lighter(amount) if lighter else color.darker(amount)
-            return tuned.name()
-
-        dark_ui = window.lightness() < 128
-        block_bg = soften(window, 106 if dark_ui else 102, lighter=not dark_ui)
-        title_bg = soften(button, 112 if dark_ui else 103, lighter=not dark_ui)
-        editor_bg = soften(base, 103 if dark_ui else 100, lighter=not dark_ui)
-        border = soften(mid, 125 if dark_ui else 110, lighter=not dark_ui)
-        muted_text = text.name()
-
-        block_style = (
-            "QWidget#outputBlock {"
-            f" background-color: {block_bg};"
-            f" border: 1px solid {border};"
-            " border-radius: 8px;"
-            " padding: 6px;"
-            " margin-top: 4px;"
-            "}"
-            "QToolButton#outputBlockTitle {"
-            f" background-color: {title_bg};"
-            f" color: {muted_text};"
-            f" border: 1px solid {border};"
-            " border-radius: 6px;"
-            " padding: 7px 10px;"
-            " font-weight: 600;"
-            " text-align: left;"
-            "}"
-            "QToolButton#outputBlockThinkingTitle {"
-            f" background-color: {editor_bg};"
-            f" color: {muted_text};"
-            f" border: 1px solid {border};"
-            " border-radius: 6px;"
-            " padding: 6px 10px;"
-            " text-align: left;"
-            "}"
-            "QToolButton#outputBlockThinkingTitle[streaming=\"true\"] {"
-            " background-color: #fff0b3;"
-            " color: #4d3600;"
-            " border-color: #d69b00;"
-            " font-weight: 600;"
-            "}"
-            "QToolButton#outputBlockThinkingTitle[streaming=\"true\"][pulse=\"true\"] {"
-            " background-color: #ffd86b;"
-            "}"
-            "QTextBrowser#outputBlockContent, QTextBrowser#outputBlockThinkingEditor {"
-            f" background-color: {editor_bg};"
-            f" color: {muted_text};"
-            f" border: 1px solid {border};"
-            " border-radius: 6px;"
-            " padding: 8px;"
-            " selection-background-color: palette(highlight);"
-            "}"
-        )
-        for widget in blocks:
-            if widget is not None:
-                widget.setStyleSheet(block_style)
-
-    def _find_text_selection_source(self, widget: Optional[QWidget]) -> Optional[QWidget]:
-        current = widget
-        while current is not None:
-            if isinstance(current, (QTextBrowser, QPlainTextEdit)):
-                return current
-            current = current.parentWidget()
-        return None
-
-    def _selected_text_from_widget(self, widget: Optional[QWidget]) -> str:
-        text_widget = self._find_text_selection_source(widget)
-        if text_widget is None:
-            return ""
-        selected = text_widget.textCursor().selectedText()
-        if not selected:
-            return ""
-        return selected.replace("\u2029", "\n")
+        if hasattr(self, "output_blocks"):
+            self.output_blocks.clear()
 
     def _get_selected_output_text(self) -> str:
-        selected = self._selected_text_from_widget(QApplication.focusWidget())
-        if selected:
-            self._last_output_selection = selected
-            return selected
-        if self._last_output_selection:
-            return self._last_output_selection
-        return self.output_text_edit.textCursor().selectedText().replace("\u2029", "\n")
+        if not hasattr(self, "output_blocks"):
+            return self.output_text_edit.textCursor().selectedText().replace("\u2029", "\n")
+        return self.output_blocks.get_selected_output_text(
+            QApplication.focusWidget(),
+            self.output_text_edit,
+        )
 
     @staticmethod
     def _is_thinking_output_missing_error(error: Exception) -> bool:
@@ -808,8 +547,8 @@ class MainWindow(QMainWindow):
         reasoning_text = ""
         if open_thinking_initial_text:
             reasoning_text += open_thinking_initial_text
-            self._append_to_block_editor(reasoning_editor, open_thinking_initial_text)
-        self._set_thinking_title_streaming(reasoning_editor, True)
+            self.output_blocks.append_to_editor(reasoning_editor, open_thinking_initial_text)
+        self.output_blocks.set_thinking_title_streaming(reasoning_editor, True)
         try:
             async for event in self._stream_generation_request(
                 messages=first_pass_messages,
@@ -826,15 +565,15 @@ class MainWindow(QMainWindow):
                     )
                     if reasoning_part:
                         reasoning_text += reasoning_part
-                        self._append_to_block_editor(reasoning_editor, reasoning_part)
+                        self.output_blocks.append_to_editor(reasoning_editor, reasoning_part)
                 if event.reasoning_content:
                     reasoning_text += event.reasoning_content
-                    self._append_to_block_editor(reasoning_editor, event.reasoning_content)
+                    self.output_blocks.append_to_editor(reasoning_editor, event.reasoning_content)
             if open_thinking_active and open_thinking_pending:
                 reasoning_text += open_thinking_pending
-                self._append_to_block_editor(reasoning_editor, open_thinking_pending)
+                self.output_blocks.append_to_editor(reasoning_editor, open_thinking_pending)
         finally:
-            self._set_thinking_title_streaming(reasoning_editor, False)
+            self.output_blocks.set_thinking_title_streaming(reasoning_editor, False)
 
         if not reasoning_text.strip():
             raise KoboldClientError(THINKING_OUTPUT_MISSING_MESSAGE)
@@ -957,7 +696,7 @@ class MainWindow(QMainWindow):
                 request_kind=self.current_mode,
                 has_assistant_prefill=bool(extracted_prefill),
             )
-            block_editor, thinking_editor = self._create_output_block(
+            block_editor, thinking_editor = self.output_blocks.create_block(
                 block_title,
                 include_thinking=(
                     initial_policy.effective_enabled
@@ -987,7 +726,7 @@ class MainWindow(QMainWindow):
             project_thought_block = self._build_project_thinking_prefill_block(
                 self._get_project_thinking_prefill_text()
             )
-            block_editor, thinking_editor = self._create_output_block(
+            block_editor, thinking_editor = self.output_blocks.create_block(
                 block_title,
                 include_thinking=bool(project_thought_block),
             )
@@ -1006,14 +745,14 @@ class MainWindow(QMainWindow):
             reasoning_text += prefilled_thinking_text
             existing_thinking_text = thinking_editor.toPlainText().strip() if thinking_editor is not None else ""
             if not existing_thinking_text:
-                self._append_to_block_editor(thinking_editor, prefilled_thinking_text)
+                self.output_blocks.append_to_editor(thinking_editor, prefilled_thinking_text)
         if open_thinking_initial_text:
             reasoning_text += open_thinking_initial_text
-            self._append_to_block_editor(thinking_editor, open_thinking_initial_text)
+            self.output_blocks.append_to_editor(thinking_editor, open_thinking_initial_text)
         thinking_title_active = False
         try:
             if open_thinking_active:
-                self._set_thinking_title_streaming(thinking_editor, True)
+                self.output_blocks.set_thinking_title_streaming(thinking_editor, True)
                 thinking_title_active = True
 
             async for event in self._stream_generation_request(
@@ -1033,37 +772,37 @@ class MainWindow(QMainWindow):
                         )
                         if reasoning_part:
                             reasoning_text += reasoning_part
-                            self._append_to_block_editor(thinking_editor, reasoning_part)
+                            self.output_blocks.append_to_editor(thinking_editor, reasoning_part)
                         if visible_part:
                             if thinking_title_active:
-                                self._set_thinking_title_streaming(thinking_editor, False)
+                                self.output_blocks.set_thinking_title_streaming(thinking_editor, False)
                                 thinking_title_active = False
                             content_text += visible_part
                             if append_output:
                                 self._append_to_output(visible_part)
-                                self._append_to_block_editor(block_editor, visible_part)
+                                self.output_blocks.append_to_editor(block_editor, visible_part)
                     else:
                         if thinking_title_active and backend_reasoning_detected:
-                            self._set_thinking_title_streaming(thinking_editor, False)
+                            self.output_blocks.set_thinking_title_streaming(thinking_editor, False)
                             thinking_title_active = False
                         content_text += event.content
                         if append_output:
                             self._append_to_output(event.content)
-                            self._append_to_block_editor(block_editor, event.content)
+                            self.output_blocks.append_to_editor(block_editor, event.content)
                 if event.reasoning_content:
                     backend_reasoning_detected = True
                     if not thinking_title_active:
-                        self._set_thinking_title_streaming(thinking_editor, True)
+                        self.output_blocks.set_thinking_title_streaming(thinking_editor, True)
                         thinking_title_active = True
                     reasoning_text += event.reasoning_content
-                    self._append_to_block_editor(thinking_editor, event.reasoning_content)
+                    self.output_blocks.append_to_editor(thinking_editor, event.reasoning_content)
                 await asyncio.sleep(0.001)
 
             if open_thinking_active and open_thinking_pending and not backend_reasoning_detected:
                 reasoning_text += open_thinking_pending
-                self._append_to_block_editor(thinking_editor, open_thinking_pending)
+                self.output_blocks.append_to_editor(thinking_editor, open_thinking_pending)
         finally:
-            self._set_thinking_title_streaming(thinking_editor, False)
+            self.output_blocks.set_thinking_title_streaming(thinking_editor, False)
 
         if self._use_chat_completions_mode() and generation_params and generation_params.get("encapsulate_thinking") and not reasoning_text.strip():
             raise KoboldClientError(THINKING_OUTPUT_MISSING_MESSAGE)
@@ -1128,7 +867,23 @@ class MainWindow(QMainWindow):
         self.thinking_mode_checkbox.toggled.connect(self._update_assistant_thinking_prefill_state)
         toolbar.addWidget(self.thinking_mode_checkbox)
         self._update_thinking_checkbox_ui()
-        
+
+        toolbar.addSeparator()
+
+        self.details_drawer_action = QAction("詳細", self)
+        self.details_drawer_action.setCheckable(True)
+        self.details_drawer_action.triggered.connect(
+            lambda checked: self._toggle_side_drawer("details", checked)
+        )
+        toolbar.addAction(self.details_drawer_action)
+
+        self.memo_drawer_action = QAction("メモ", self)
+        self.memo_drawer_action.setCheckable(True)
+        self.memo_drawer_action.triggered.connect(
+            lambda checked: self._toggle_side_drawer("memo", checked)
+        )
+        toolbar.addAction(self.memo_drawer_action)
+
         # スペーサーを追加して右端にショートカット説明を配置
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -1148,29 +903,40 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.token_label)
 
     def _create_central_widget(self):
-        central_splitter = QSplitter(Qt.Horizontal)
-        self.setCentralWidget(central_splitter)
-
-        left_widget = QWidget()
-        left_main_layout = QVBoxLayout(left_widget)
-        left_main_layout.setContentsMargins(0,0,0,0)
-        left_main_layout.setSpacing(0)
-        left_splitter = QSplitter(Qt.Vertical)
-        left_main_layout.addWidget(left_splitter)
+        self.central_splitter = QSplitter(Qt.Horizontal)
+        self.setCentralWidget(self.central_splitter)
 
         main_text_container = QWidget()
         main_text_layout = QVBoxLayout(main_text_container)
-        main_text_layout.setContentsMargins(0, 5, 0, 0)
+        main_text_layout.setContentsMargins(0, 5, 4, 0)
         main_text_layout.setSpacing(5)
         self.main_text_edit = QPlainTextEdit()
         self.main_text_edit.setPlaceholderText("ここに小説本文を入力・編集します...")
         main_text_layout.addWidget(self.main_text_edit)
-        left_splitter.addWidget(main_text_container)
 
         output_container = QWidget()
         output_layout = QVBoxLayout(output_container)
-        output_layout.setContentsMargins(0, 5, 0, 0)
+        output_layout.setContentsMargins(4, 5, 4, 0)
         output_layout.setSpacing(5)
+        output_header_layout = QHBoxLayout()
+        output_header_layout.setContentsMargins(0, 0, 0, 0)
+        output_header_label = QLabel("生成候補")
+        output_clear_button = QPushButton("クリア")
+        output_to_main_button = QPushButton("選択を本文へ")
+        output_to_memo_button = QPushButton("選択をメモへ")
+        output_clear_button.setFocusPolicy(Qt.NoFocus)
+        output_to_main_button.setFocusPolicy(Qt.NoFocus)
+        output_to_memo_button.setFocusPolicy(Qt.NoFocus)
+        output_clear_button.clicked.connect(self._clear_output_edit)
+        output_to_main_button.clicked.connect(self._transfer_output_to_main)
+        output_to_memo_button.clicked.connect(self._transfer_output_to_memo)
+        output_header_layout.addWidget(output_header_label)
+        output_header_layout.addStretch()
+        output_header_layout.addWidget(output_clear_button)
+        output_header_layout.addWidget(output_to_main_button)
+        output_header_layout.addWidget(output_to_memo_button)
+        output_layout.addLayout(output_header_layout)
+
         self.output_text_edit = QPlainTextEdit()
         self.output_text_edit.setReadOnly(True)
         self.output_text_edit.setPlaceholderText("LLMからの出力がここに表示されます...")
@@ -1182,38 +948,89 @@ class MainWindow(QMainWindow):
         self.output_blocks_layout.setContentsMargins(0, 0, 0, 0)
         self.output_blocks_layout.addStretch()
         self.output_blocks_scroll.setWidget(self.output_blocks_widget)
+        self.output_blocks = OutputBlockManager(
+            self.output_blocks_scroll,
+            self.output_blocks_layout,
+            on_insert_to_main=self._insert_output_text_to_main,
+            on_append_to_memo=self._append_output_text_to_memo,
+            on_status_message=self.status_bar.showMessage,
+        )
         output_scroll_bar = self.output_blocks_scroll.verticalScrollBar()
-        output_scroll_bar.valueChanged.connect(self._on_output_blocks_scroll_changed)
-        output_scroll_bar.rangeChanged.connect(self._on_output_blocks_range_changed)
+        output_scroll_bar.valueChanged.connect(self.output_blocks.on_scroll_changed)
+        output_scroll_bar.rangeChanged.connect(self.output_blocks.on_range_changed)
         output_layout.addWidget(self.output_blocks_scroll)
-        self._update_output_blocks_auto_follow()
-        output_button_layout = QHBoxLayout()
-        output_clear_button = QPushButton("[ 出力物クリア ]")
-        output_to_main_button = QPushButton("[ 選択部分を本文へ転記 ]")
-        output_to_memo_button = QPushButton("[ 選択部分をメモへ転記 ]")
-        output_clear_button.setFocusPolicy(Qt.NoFocus)
-        output_to_main_button.setFocusPolicy(Qt.NoFocus)
-        output_to_memo_button.setFocusPolicy(Qt.NoFocus)
-        output_clear_button.clicked.connect(self._clear_output_edit)
-        output_to_main_button.clicked.connect(self._transfer_output_to_main)
-        output_to_memo_button.clicked.connect(self._transfer_output_to_memo)
-        output_button_layout.addWidget(output_clear_button)
-        output_button_layout.addWidget(output_to_main_button)
-        output_button_layout.addWidget(output_to_memo_button)
-        output_button_layout.addStretch()
-        output_layout.addLayout(output_button_layout)
-        left_splitter.addWidget(output_container)
+        self.output_blocks.update_auto_follow()
 
+        self.side_drawer_widget = QWidget()
+        side_drawer_layout = QVBoxLayout(self.side_drawer_widget)
+        side_drawer_layout.setContentsMargins(4, 5, 0, 0)
+        side_drawer_layout.setSpacing(5)
+        side_drawer_header = QHBoxLayout()
+        side_drawer_header.setContentsMargins(0, 0, 0, 0)
+        self.side_drawer_title_label = QLabel("詳細")
+        side_drawer_close_button = QPushButton("閉じる")
+        side_drawer_close_button.setFocusPolicy(Qt.NoFocus)
+        side_drawer_close_button.clicked.connect(self._close_side_drawer)
+        side_drawer_header.addWidget(self.side_drawer_title_label)
+        side_drawer_header.addStretch()
+        side_drawer_header.addWidget(side_drawer_close_button)
+        side_drawer_layout.addLayout(side_drawer_header)
         self.right_tab_widget = QTabWidget()
         self._create_details_tab()
         self._create_memo_tab()
         self.right_tab_widget.addTab(self.details_tab_widget, "詳細情報")
         self.right_tab_widget.addTab(self.memo_tab_widget, "メモ")
+        self.right_tab_widget.currentChanged.connect(self._on_side_drawer_tab_changed)
+        side_drawer_layout.addWidget(self.right_tab_widget)
+        self.side_drawer_widget.hide()
 
-        central_splitter.addWidget(left_widget)
-        central_splitter.addWidget(self.right_tab_widget)
-        central_splitter.setSizes([700, 500])
-        left_splitter.setSizes([600, 200])
+        self.central_splitter.addWidget(main_text_container)
+        self.central_splitter.addWidget(output_container)
+        self.central_splitter.addWidget(self.side_drawer_widget)
+        self.central_splitter.setSizes([760, 430, 0])
+
+    def _toggle_side_drawer(self, drawer_key: str, checked: bool):
+        if not checked:
+            self._close_side_drawer()
+            return
+        self._open_side_drawer(drawer_key)
+
+    def _open_side_drawer(self, drawer_key: str):
+        if not hasattr(self, "side_drawer_widget") or not hasattr(self, "right_tab_widget"):
+            return
+
+        tab_index = 0 if drawer_key == "details" else 1
+        self.right_tab_widget.setCurrentIndex(tab_index)
+        self.side_drawer_widget.show()
+        self.side_drawer_title_label.setText("詳細" if tab_index == 0 else "メモ")
+        self._sync_side_drawer_actions(tab_index)
+        if hasattr(self, "central_splitter"):
+            self.central_splitter.setSizes([690, 410, 320])
+
+    def _close_side_drawer(self):
+        if hasattr(self, "side_drawer_widget"):
+            self.side_drawer_widget.hide()
+        self._sync_side_drawer_actions(None)
+        if hasattr(self, "central_splitter"):
+            self.central_splitter.setSizes([760, 430, 0])
+
+    def _on_side_drawer_tab_changed(self, tab_index: int):
+        if not hasattr(self, "side_drawer_widget") or not self.side_drawer_widget.isVisible():
+            return
+        self.side_drawer_title_label.setText("詳細" if tab_index == 0 else "メモ")
+        self._sync_side_drawer_actions(tab_index)
+
+    def _sync_side_drawer_actions(self, tab_index: Optional[int]):
+        for action_name, should_check in (
+            ("details_drawer_action", tab_index == 0),
+            ("memo_drawer_action", tab_index == 1),
+        ):
+            action = getattr(self, action_name, None)
+            if action is None:
+                continue
+            action.blockSignals(True)
+            action.setChecked(bool(should_check))
+            action.blockSignals(False)
 
     def _setup_syntax_highlighting(self):
         def protected_ghost_spans():
@@ -1246,7 +1063,8 @@ class MainWindow(QMainWindow):
     def _on_theme_changed(self, theme_name: str):
         for highlighter in getattr(self, "_syntax_highlighters", []):
             highlighter.update_theme()
-        self._apply_output_block_style()
+        if hasattr(self, "output_blocks"):
+            self.output_blocks.apply_style()
 
     def _create_details_tab(self):
         self.details_tab_widget = QWidget()
@@ -1907,7 +1725,7 @@ class MainWindow(QMainWindow):
             # Display filtered output (replace existing content in output area)
             # self._append_to_output(filtered_output) # Append might be confusing, let's replace
             self.output_text_edit.appendPlainText(filtered_output) # Append after the separator
-            self._append_to_block_editor(block_editor, filtered_output)
+            self.output_blocks.append_to_editor(block_editor, filtered_output)
             cursor = self.output_text_edit.textCursor()
             cursor.movePosition(QTextCursor.End)
             self.output_text_edit.setTextCursor(cursor)
@@ -2220,7 +2038,7 @@ class MainWindow(QMainWindow):
                                 filtered_output = processor.filter_output(full_output, selected_item_key)
                                 # Append separator and filtered output directly
                                 self.output_text_edit.appendPlainText(separator + filtered_output)
-                                self._append_to_block_editor(block_editor, filtered_output)
+                                self.output_blocks.append_to_editor(block_editor, filtered_output)
                                 cursor = self.output_text_edit.textCursor()
                                 cursor.movePosition(QTextCursor.End)
                                 self.output_text_edit.setTextCursor(cursor)
@@ -2352,7 +2170,6 @@ class MainWindow(QMainWindow):
         """Clears the output text edit and resets the block counter."""
         self.output_text_edit.clear()
         self._clear_thinking_output()
-        self._last_output_selection = ""
         self.output_block_counter = 1
         self.status_bar.showMessage("出力エリアをクリアしました。", 2000)
 
@@ -2364,6 +2181,10 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("出力エリアでテキストが選択されていません。", 2000)
             return
 
+        self._insert_output_text_to_main(selected_text)
+
+    def _insert_output_text_to_main(self, selected_text: str):
+        """Inserts output text into the main editor using the configured transfer mode."""
         settings = load_settings()
         transfer_mode = settings.get("transfer_to_main_mode", DEFAULT_SETTINGS["transfer_to_main_mode"])
         newlines_before = settings.get("transfer_newlines_before", DEFAULT_SETTINGS["transfer_newlines_before"])
@@ -2388,6 +2209,7 @@ class MainWindow(QMainWindow):
         else: # Fallback to cursor mode if setting is invalid
             cursor.insertText(selected_text)
 
+        self.main_text_edit.setFocus()
         self.status_bar.showMessage("選択範囲を本文エリアに転記しました。", 2000)
 
     @Slot()
@@ -2395,10 +2217,14 @@ class MainWindow(QMainWindow):
         """Transfers selected text from output area to memo area."""
         selected_text = self._get_selected_output_text()
         if selected_text:
-            self.memo_edit.appendPlainText(selected_text) # Append to memo
-            self.status_bar.showMessage("選択範囲をメモエリアに転記しました。", 2000)
+            self._append_output_text_to_memo(selected_text)
         else:
             self.status_bar.showMessage("出力エリアでテキストが選択されていません。", 2000) # Message updated
+
+    def _append_output_text_to_memo(self, selected_text: str):
+        """Appends output text to the memo drawer."""
+        self.memo_edit.appendPlainText(selected_text)
+        self.status_bar.showMessage("選択範囲をメモエリアに転記しました。", 2000)
 
     @Slot()
     def _transfer_output_to_thinking_prefill(self):

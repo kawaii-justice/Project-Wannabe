@@ -3,7 +3,8 @@ import os # Add os import
 from contextlib import contextmanager
 from PySide6.QtWidgets import (QMenuBar, QFileDialog, QMessageBox, QDialog, QWidget, # Add QWidget
                                QFontDialog, QApplication, QCheckBox, QLabel, # Add QLabel
-                               QVBoxLayout, QDialogButtonBox, QTextEdit, QPlainTextEdit, QLineEdit) # Add TextEdit types
+                               QVBoxLayout, QDialogButtonBox, QTextEdit, QPlainTextEdit, QLineEdit,
+                               QTextBrowser) # Add TextEdit types
 from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QFont # Add QFont
 from PySide6.QtCore import Slot, Qt
 
@@ -629,11 +630,16 @@ class MenuHandler:
 
         widgets_to_update = []
         # Add main text areas if they exist
-        for attr_name in ['main_text_edit', 'output_text_edit', 'memo_edit',
-                          'synopsis_edit', 'setting_edit', 'plot_edit', 'title_edit']:
+        for attr_name in [
+            'main_text_edit', 'output_text_edit', 'output_blocks_scroll', 'output_blocks_widget',
+            'memo_edit', 'synopsis_edit', 'setting_edit', 'plot_edit', 'title_edit',
+            'authors_note_edit', 'assistant_thinking_prefill_edit',
+        ]:
             widget = getattr(self.main_window, attr_name, None)
-            if widget and isinstance(widget, (QLineEdit, QPlainTextEdit)):
+            if widget and isinstance(widget, (QLineEdit, QPlainTextEdit, QTextEdit, QTextBrowser, QWidget)):
                 widgets_to_update.append(widget)
+
+        widgets_to_update.extend(self.main_window.findChildren(QTextBrowser))
 
         # Add TagWidget input and labels
         try:
