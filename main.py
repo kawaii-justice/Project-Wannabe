@@ -903,6 +903,12 @@ class MainWindow(QMainWindow):
         self.shortcut_label = QLabel("単発生成: Ctrl+G | 無限生成: F5")
         toolbar.addWidget(self.shortcut_label)
 
+        self.open_drawer_button = QPushButton("<<")
+        self.open_drawer_button.setToolTip("右サイドパネルを開きます。")
+        self.open_drawer_button.setFocusPolicy(Qt.NoFocus)
+        self.open_drawer_button.clicked.connect(self._open_last_side_drawer)
+        toolbar.addWidget(self.open_drawer_button)
+
     def _create_status_bar(self):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -919,6 +925,7 @@ class MainWindow(QMainWindow):
         self._output_pane_min_width = 280
         self._side_drawer_min_width = 260
         self._last_side_drawer_width = 320
+        self._last_side_drawer_key = "details"
 
         main_text_container = QWidget()
         main_text_container.setMinimumWidth(self._main_pane_min_width)
@@ -1025,6 +1032,7 @@ class MainWindow(QMainWindow):
             return
 
         tab_index = 0 if drawer_key == "details" else 1
+        self._last_side_drawer_key = drawer_key
         was_hidden = self.side_drawer_widget.isHidden()
         self.right_tab_widget.setCurrentIndex(tab_index)
         self.side_drawer_widget.show()
@@ -1032,6 +1040,9 @@ class MainWindow(QMainWindow):
         self._sync_side_drawer_actions(tab_index)
         if was_hidden and hasattr(self, "central_splitter"):
             self.central_splitter.setSizes(self._sizes_with_open_drawer())
+
+    def _open_last_side_drawer(self):
+        self._open_side_drawer(getattr(self, "_last_side_drawer_key", "details"))
 
     def _close_side_drawer(self):
         if hasattr(self, "central_splitter") and hasattr(self, "side_drawer_widget"):
@@ -1106,6 +1117,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "side_drawer_widget") or self.side_drawer_widget.isHidden():
             return
         self.side_drawer_title_label.setText("サイドパネル: 詳細情報" if tab_index == 0 else "サイドパネル: メモ")
+        self._last_side_drawer_key = "details" if tab_index == 0 else "memo"
         self._sync_side_drawer_actions(tab_index)
 
     def _sync_side_drawer_actions(self, tab_index: Optional[int]):
@@ -1122,6 +1134,9 @@ class MainWindow(QMainWindow):
         close_action = getattr(self, "close_drawer_action", None)
         if close_action is not None:
             close_action.setEnabled(tab_index is not None)
+        open_button = getattr(self, "open_drawer_button", None)
+        if open_button is not None:
+            open_button.setEnabled(tab_index is None)
 
     def _setup_syntax_highlighting(self):
         def protected_ghost_spans():
