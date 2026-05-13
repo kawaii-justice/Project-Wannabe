@@ -95,11 +95,11 @@ def build_open_thinking_prefill(
         return ""
 
     if strategy == THINKING_STRATEGY_THINK_TAGS:
-        return f"<think>\n{seed}\n"
+        return f"<think>\n{seed}"
     if strategy == THINKING_STRATEGY_GEMMA4_CHANNEL:
-        return f"<|channel>thought\n{seed}\n"
+        return f"<|channel>thought\n{seed}"
     if strategy == THINKING_STRATEGY_CUSTOM:
-        return f"{custom_prefix}{seed}\n"
+        return f"{custom_prefix}{seed}"
     raise ValueError(f"Unsupported open thinking prefill strategy: {strategy}")
 
 
