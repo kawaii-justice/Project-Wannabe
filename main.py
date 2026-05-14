@@ -1031,7 +1031,7 @@ class MainWindow(QMainWindow):
 
     def _create_authors_note_panel(self) -> QWidget:
         self._authors_note_panel_expanded = False
-        self._last_authors_note_panel_height = 140
+        self._last_authors_note_panel_height = 220
 
         panel = QWidget()
         panel.setObjectName("authorsNotePanel")
@@ -1070,7 +1070,7 @@ class MainWindow(QMainWindow):
             "主人公エルフ\n"
             "迷子ドラゴン登場"
         )
-        self.authors_note_edit.setMinimumHeight(92)
+        self.authors_note_edit.setMinimumHeight(44)
         card_layout.addWidget(self.authors_note_edit)
 
         panel_layout.addWidget(self.authors_note_card)
@@ -1087,7 +1087,7 @@ class MainWindow(QMainWindow):
         button = getattr(self, "authors_note_toggle_button", None)
         edit = getattr(self, "authors_note_edit", None)
         if button is None or edit is None:
-            return 144
+            return 96
 
         card_vertical_margin = 8
         card_spacing = 4
