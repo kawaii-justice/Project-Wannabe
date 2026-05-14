@@ -1079,7 +1079,7 @@ class MainWindow(QMainWindow):
         button = getattr(self, "authors_note_toggle_button", None)
         if button is None:
             return 28
-        return button.sizeHint().height() + 16
+        return button.sizeHint().height() + 10
 
     def _authors_note_expanded_min_height(self) -> int:
         button = getattr(self, "authors_note_toggle_button", None)
@@ -1087,7 +1087,7 @@ class MainWindow(QMainWindow):
         if button is None or edit is None:
             return 132
 
-        card_vertical_margin = 12
+        card_vertical_margin = 8
         card_spacing = 4
         border_allowance = 4
         return (
@@ -1147,7 +1147,7 @@ class MainWindow(QMainWindow):
         def tune(color: QColor, amount: int, lighter: bool) -> str:
             return (color.lighter(amount) if lighter else color.darker(amount)).name()
 
-        inner_margin = 6
+        inner_margin = 4
         if self._authors_note_panel_expanded:
             panel_bg = tune(window, 108 if dark_ui else 103, lighter=dark_ui)
             border = tune(highlight, 135 if dark_ui else 115, lighter=dark_ui)
