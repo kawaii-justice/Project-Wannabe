@@ -1140,7 +1140,7 @@ class MainWindow(QMainWindow):
 
         has_note = bool(self.authors_note_edit.toPlainText().strip())
         if has_note and not self._authors_note_panel_expanded:
-            self.authors_note_toggle_button.setText("次の展開の指示（入力あり）")
+            self.authors_note_toggle_button.setText("次の展開の指示（適用中）")
             self.authors_note_toggle_button.setToolTip("次の展開の指示が入力されています。クリックして編集します。")
         else:
             self.authors_note_toggle_button.setText("次の展開の指示")
