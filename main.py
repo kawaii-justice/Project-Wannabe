@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar,
                                QSplitter, QWidget, QVBoxLayout, QHBoxLayout,
                                QTabWidget, QScrollArea, QLineEdit, QPushButton, QMessageBox,
                                QPlainTextEdit, QTextBrowser, QToolBar, QDialog, QLabel, QComboBox,
-                               QCheckBox, QSizePolicy)
+                               QCheckBox, QSizePolicy, QToolButton)
 from PySide6.QtCore import Qt, Slot, QTimer, QEvent # Add QEvent
 from PySide6.QtGui import QTextCursor, QAction, QActionGroup
 from typing import Dict, Optional, List # Add Optional and List here
@@ -932,9 +932,17 @@ class MainWindow(QMainWindow):
         main_text_layout = QVBoxLayout(main_text_container)
         main_text_layout.setContentsMargins(0, 5, 4, 0)
         main_text_layout.setSpacing(5)
+        self.main_text_splitter = QSplitter(Qt.Vertical)
+        self.main_text_splitter.setChildrenCollapsible(False)
+        self.authors_note_panel = self._create_authors_note_panel()
         self.main_text_edit = QPlainTextEdit()
         self.main_text_edit.setPlaceholderText("ここに小説本文を入力・編集します...")
-        main_text_layout.addWidget(self.main_text_edit)
+        self.main_text_splitter.addWidget(self.authors_note_panel)
+        self.main_text_splitter.addWidget(self.main_text_edit)
+        self.main_text_splitter.setStretchFactor(0, 0)
+        self.main_text_splitter.setStretchFactor(1, 1)
+        main_text_layout.addWidget(self.main_text_splitter)
+        QTimer.singleShot(0, lambda: self._set_authors_note_panel_expanded(False, remember_height=False))
 
         output_container = QWidget()
         output_container.setMinimumWidth(self._output_pane_min_width)
@@ -1020,6 +1028,77 @@ class MainWindow(QMainWindow):
         self.central_splitter.splitterMoved.connect(self._on_central_splitter_moved)
         self.central_splitter.setSizes([620, 360, 320])
         self._sync_side_drawer_actions(0)
+
+    def _create_authors_note_panel(self) -> QWidget:
+        self._authors_note_panel_expanded = False
+        self._last_authors_note_panel_height = 120
+
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(4)
+
+        self.authors_note_toggle_button = QToolButton()
+        self.authors_note_toggle_button.setText("次の展開の指示")
+        self.authors_note_toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.authors_note_toggle_button.setArrowType(Qt.RightArrow)
+        self.authors_note_toggle_button.setCheckable(True)
+        self.authors_note_toggle_button.setFocusPolicy(Qt.NoFocus)
+        self.authors_note_toggle_button.clicked.connect(
+            lambda checked: self._set_authors_note_panel_expanded(checked)
+        )
+        panel_layout.addWidget(self.authors_note_toggle_button)
+
+        self.authors_note_edit = QPlainTextEdit()
+        self.authors_note_edit.setPlaceholderText(
+            "この先1000文字程度の展開・要素を記述\n"
+            "例:\n"
+            "主人公のエルフの少女が、森の中で迷子のドラゴンと出会うシーン。\n"
+            "驚きと少しの警戒心、そして好奇心が入り混じった描写を。\n\n"
+            "または単語の羅列も可能です。例:\n"
+            "主人公エルフ\n"
+            "迷子ドラゴン登場"
+        )
+        self.authors_note_edit.setMinimumHeight(80)
+        panel_layout.addWidget(self.authors_note_edit)
+
+        return panel
+
+    def _authors_note_collapsed_height(self) -> int:
+        button = getattr(self, "authors_note_toggle_button", None)
+        if button is None:
+            return 28
+        return button.sizeHint().height() + 4
+
+    def _set_authors_note_panel_expanded(self, expanded: bool, *, remember_height: bool = True):
+        if not hasattr(self, "authors_note_panel") or not hasattr(self, "authors_note_edit"):
+            return
+
+        expanded = bool(expanded)
+        sizes = self.main_text_splitter.sizes() if hasattr(self, "main_text_splitter") else []
+        if remember_height and not expanded and sizes and sizes[0] > self._authors_note_collapsed_height() + 8:
+            self._last_authors_note_panel_height = sizes[0]
+
+        collapsed_height = self._authors_note_collapsed_height()
+        self._authors_note_panel_expanded = expanded
+        self.authors_note_toggle_button.blockSignals(True)
+        self.authors_note_toggle_button.setChecked(expanded)
+        self.authors_note_toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.authors_note_toggle_button.blockSignals(False)
+        self.authors_note_edit.setVisible(expanded)
+
+        if expanded:
+            target_height = max(100, getattr(self, "_last_authors_note_panel_height", 120))
+            self.authors_note_panel.setMinimumHeight(100)
+            self.authors_note_panel.setMaximumHeight(16777215)
+        else:
+            target_height = collapsed_height
+            self.authors_note_panel.setMinimumHeight(collapsed_height)
+            self.authors_note_panel.setMaximumHeight(collapsed_height)
+
+        if hasattr(self, "main_text_splitter"):
+            total = max(sum(sizes), self.main_text_splitter.height())
+            self.main_text_splitter.setSizes([target_height, max(1, total - target_height)])
 
     def _toggle_side_drawer(self, drawer_key: str, checked: bool):
         if not checked:
@@ -1316,18 +1395,6 @@ class MainWindow(QMainWindow):
         plot_layout.addWidget(self.plot_transfer_button, 0, Qt.AlignTop)
         plot_section.content_layout.addLayout(plot_layout)
         details_layout.addWidget(plot_section)
-
-        # Author's Note
-        authors_note_section = CollapsibleSection("次の展開についてのメモ")
-        authors_note_layout = QHBoxLayout()
-        self.authors_note_edit = QPlainTextEdit()
-        self.authors_note_edit.setPlaceholderText("この先1000文字程度の展開・要素を記述\n例：\n主人公のエルフの少女が、森の中で迷子のドラゴンと出会うシーン。\n驚きと少しの警戒心、そして好奇心が入り混じった描写を。\n\nまたは単語の羅列も可能です。例：\n主人公エルフ\n迷子ドラゴン登場")
-        # Optionally set a fixed height or leave it default
-        # self.authors_note_edit.setFixedHeight(100)
-        authors_note_layout.addWidget(self.authors_note_edit)
-        # No transfer button needed for author's note typically
-        authors_note_section.content_layout.addLayout(authors_note_layout)
-        details_layout.addWidget(authors_note_section)
 
         # Dialogue Level
         dialogue_section = CollapsibleSection("セリフ量 (生成時)") # Clarify title
