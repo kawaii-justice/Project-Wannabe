@@ -1079,7 +1079,7 @@ class MainWindow(QMainWindow):
         button = getattr(self, "authors_note_toggle_button", None)
         if button is None:
             return 28
-        return button.sizeHint().height() + 4
+        return button.sizeHint().height() + 16
 
     def _authors_note_expanded_min_height(self) -> int:
         button = getattr(self, "authors_note_toggle_button", None)
@@ -1087,15 +1087,13 @@ class MainWindow(QMainWindow):
         if button is None or edit is None:
             return 132
 
-        outer_vertical_margin = 12
-        card_vertical_margin = 20
+        card_vertical_margin = 12
         card_spacing = 4
         border_allowance = 4
         return (
             button.sizeHint().height()
             + edit.minimumHeight()
             + card_spacing
-            + outer_vertical_margin
             + card_vertical_margin
             + border_allowance
         )
@@ -1149,16 +1147,15 @@ class MainWindow(QMainWindow):
         def tune(color: QColor, amount: int, lighter: bool) -> str:
             return (color.lighter(amount) if lighter else color.darker(amount)).name()
 
+        inner_margin = 6
         if self._authors_note_panel_expanded:
-            panel_bg = tune(window, 114 if dark_ui else 103, lighter=dark_ui)
-            border = tune(mid, 112 if dark_ui else 106, lighter=dark_ui)
+            panel_bg = tune(window, 108 if dark_ui else 103, lighter=dark_ui)
+            border = tune(highlight, 135 if dark_ui else 115, lighter=dark_ui)
             editor_bg = tune(base, 106 if dark_ui else 101, lighter=dark_ui)
             toggle_bg = highlight.name()
             toggle_text = highlighted_text.name()
             card_border = f"1px solid {border}"
             editor_border = "none"
-            outer_margin = 8
-            inner_margin = 10
         else:
             panel_bg = "transparent"
             border = tune(mid, 125 if dark_ui else 110, lighter=not dark_ui)
@@ -1168,14 +1165,12 @@ class MainWindow(QMainWindow):
             toggle_text = text.name()
             card_border = "none"
             editor_border = f"1px solid {border}"
-            outer_margin = 0
-            inner_margin = 0
 
         self.authors_note_panel.layout().setContentsMargins(
-            outer_margin,
-            6 if self._authors_note_panel_expanded else 0,
-            outer_margin,
-            6 if self._authors_note_panel_expanded else 0,
+            0,
+            0,
+            0,
+            0,
         )
         self.authors_note_card.layout().setContentsMargins(
             inner_margin,
