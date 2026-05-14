@@ -6,9 +6,9 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar,
                                QSplitter, QWidget, QVBoxLayout, QHBoxLayout,
                                QTabWidget, QScrollArea, QLineEdit, QPushButton, QMessageBox,
                                QPlainTextEdit, QTextBrowser, QToolBar, QDialog, QLabel, QComboBox,
-                               QCheckBox, QSizePolicy, QToolButton)
+                               QCheckBox, QSizePolicy, QToolButton, QFrame)
 from PySide6.QtCore import Qt, Slot, QTimer, QEvent # Add QEvent
-from PySide6.QtGui import QTextCursor, QAction, QActionGroup
+from PySide6.QtGui import QColor, QPalette, QTextCursor, QAction, QActionGroup
 from typing import Dict, Optional, List # Add Optional and List here
 
 # Correctly import custom widgets and other modules
@@ -1034,11 +1034,19 @@ class MainWindow(QMainWindow):
         self._last_authors_note_panel_height = 120
 
         panel = QWidget()
+        panel.setObjectName("authorsNotePanel")
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)
-        panel_layout.setSpacing(4)
+        panel_layout.setSpacing(0)
+
+        self.authors_note_card = QFrame()
+        self.authors_note_card.setObjectName("authorsNoteCard")
+        card_layout = QVBoxLayout(self.authors_note_card)
+        card_layout.setContentsMargins(0, 0, 0, 0)
+        card_layout.setSpacing(4)
 
         self.authors_note_toggle_button = QToolButton()
+        self.authors_note_toggle_button.setObjectName("authorsNoteToggle")
         self.authors_note_toggle_button.setText("次の展開の指示")
         self.authors_note_toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.authors_note_toggle_button.setArrowType(Qt.RightArrow)
@@ -1047,9 +1055,10 @@ class MainWindow(QMainWindow):
         self.authors_note_toggle_button.clicked.connect(
             lambda checked: self._set_authors_note_panel_expanded(checked)
         )
-        panel_layout.addWidget(self.authors_note_toggle_button)
+        card_layout.addWidget(self.authors_note_toggle_button)
 
         self.authors_note_edit = QPlainTextEdit()
+        self.authors_note_edit.setObjectName("authorsNoteEditor")
         self.authors_note_edit.setPlaceholderText(
             "この先1000文字程度の展開・要素を記述\n"
             "例:\n"
@@ -1060,7 +1069,9 @@ class MainWindow(QMainWindow):
             "迷子ドラゴン登場"
         )
         self.authors_note_edit.setMinimumHeight(80)
-        panel_layout.addWidget(self.authors_note_edit)
+        card_layout.addWidget(self.authors_note_edit)
+
+        panel_layout.addWidget(self.authors_note_card)
 
         return panel
 
@@ -1069,6 +1080,25 @@ class MainWindow(QMainWindow):
         if button is None:
             return 28
         return button.sizeHint().height() + 4
+
+    def _authors_note_expanded_min_height(self) -> int:
+        button = getattr(self, "authors_note_toggle_button", None)
+        edit = getattr(self, "authors_note_edit", None)
+        if button is None or edit is None:
+            return 132
+
+        outer_vertical_margin = 12
+        card_vertical_margin = 20
+        card_spacing = 4
+        border_allowance = 4
+        return (
+            button.sizeHint().height()
+            + edit.minimumHeight()
+            + card_spacing
+            + outer_vertical_margin
+            + card_vertical_margin
+            + border_allowance
+        )
 
     def _set_authors_note_panel_expanded(self, expanded: bool, *, remember_height: bool = True):
         if not hasattr(self, "authors_note_panel") or not hasattr(self, "authors_note_edit"):
@@ -1088,8 +1118,9 @@ class MainWindow(QMainWindow):
         self.authors_note_edit.setVisible(expanded)
 
         if expanded:
-            target_height = max(100, getattr(self, "_last_authors_note_panel_height", 120))
-            self.authors_note_panel.setMinimumHeight(100)
+            min_height = self._authors_note_expanded_min_height()
+            target_height = max(min_height, getattr(self, "_last_authors_note_panel_height", 120))
+            self.authors_note_panel.setMinimumHeight(min_height)
             self.authors_note_panel.setMaximumHeight(16777215)
         else:
             target_height = collapsed_height
@@ -1099,6 +1130,88 @@ class MainWindow(QMainWindow):
         if hasattr(self, "main_text_splitter"):
             total = max(sum(sizes), self.main_text_splitter.height())
             self.main_text_splitter.setSizes([target_height, max(1, total - target_height)])
+        self._apply_authors_note_panel_style()
+
+    def _apply_authors_note_panel_style(self):
+        if not hasattr(self, "authors_note_panel"):
+            return
+
+        palette = QApplication.palette()
+        window = palette.color(QPalette.Window)
+        base = palette.color(QPalette.Base)
+        button = palette.color(QPalette.Button)
+        text = palette.color(QPalette.Text)
+        mid = palette.color(QPalette.Mid)
+        highlight = palette.color(QPalette.Highlight)
+        highlighted_text = palette.color(QPalette.HighlightedText)
+        dark_ui = window.lightness() < 128
+
+        def tune(color: QColor, amount: int, lighter: bool) -> str:
+            return (color.lighter(amount) if lighter else color.darker(amount)).name()
+
+        if self._authors_note_panel_expanded:
+            panel_bg = tune(window, 114 if dark_ui else 103, lighter=dark_ui)
+            border = tune(mid, 112 if dark_ui else 106, lighter=dark_ui)
+            editor_bg = tune(base, 106 if dark_ui else 101, lighter=dark_ui)
+            toggle_bg = highlight.name()
+            toggle_text = highlighted_text.name()
+            card_border = f"1px solid {border}"
+            editor_border = "none"
+            outer_margin = 8
+            inner_margin = 10
+        else:
+            panel_bg = "transparent"
+            border = tune(mid, 125 if dark_ui else 110, lighter=not dark_ui)
+            header_bg = tune(button, 112 if dark_ui else 102, lighter=not dark_ui)
+            editor_bg = base.name()
+            toggle_bg = header_bg
+            toggle_text = text.name()
+            card_border = "none"
+            editor_border = f"1px solid {border}"
+            outer_margin = 0
+            inner_margin = 0
+
+        self.authors_note_panel.layout().setContentsMargins(
+            outer_margin,
+            6 if self._authors_note_panel_expanded else 0,
+            outer_margin,
+            6 if self._authors_note_panel_expanded else 0,
+        )
+        self.authors_note_card.layout().setContentsMargins(
+            inner_margin,
+            inner_margin,
+            inner_margin,
+            inner_margin,
+        )
+        self.authors_note_panel.setStyleSheet(
+            "QWidget#authorsNotePanel {"
+            " background-color: transparent;"
+            " border: none;"
+            "}"
+            "QFrame#authorsNoteCard {"
+            f" background-color: {panel_bg};"
+            f" border: {card_border};"
+            " border-radius: 6px;"
+            " padding: 0px;"
+            "}"
+            "QToolButton#authorsNoteToggle {"
+            f" background-color: {toggle_bg};"
+            f" color: {toggle_text};"
+            f" border: 1px solid {border};"
+            " border-radius: 5px;"
+            " padding: 4px 8px;"
+            " font-weight: 600;"
+            " text-align: left;"
+            "}"
+            "QPlainTextEdit#authorsNoteEditor {"
+            f" background-color: {editor_bg};"
+            f" color: {text.name()};"
+            f" border: {editor_border};"
+            " border-radius: 5px;"
+            " padding: 8px;"
+            " selection-background-color: palette(highlight);"
+            "}"
+        )
 
     def _toggle_side_drawer(self, drawer_key: str, checked: bool):
         if not checked:
@@ -1261,6 +1374,7 @@ class MainWindow(QMainWindow):
             highlighter.update_theme()
         if hasattr(self, "output_blocks"):
             self.output_blocks.apply_style()
+        self._apply_authors_note_panel_style()
 
     def _create_details_tab(self):
         self.details_tab_widget = QWidget()

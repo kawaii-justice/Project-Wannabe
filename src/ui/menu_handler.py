@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QMenuBar, QFileDialog, QMessageBox, QDialog, QWid
                                QFontDialog, QApplication, QCheckBox, QLabel, # Add QLabel
                                QVBoxLayout, QDialogButtonBox, QTextEdit, QPlainTextEdit, QLineEdit,
                                QTextBrowser) # Add TextEdit types
-from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QFont # Add QFont
+from PySide6.QtGui import QAction, QKeySequence, QFont # Add QFont
 from PySide6.QtCore import Slot, Qt
 
 # Import necessary components from the project
@@ -430,33 +430,13 @@ class MenuHandler:
     def _create_view_menu(self, menu_bar: QMenuBar):
         view_menu = menu_bar.addMenu("表示(&V)")
 
-        # Theme switching
-        theme_menu = view_menu.addMenu("テーマ切り替え")
-        # Always create a new group owned by the handler or main window
-        self.theme_group = QActionGroup(self.main_window)
-        self.theme_group.setExclusive(True)
-
-        light_theme_action = QAction("ライト", self.main_window, checkable=True)
-        dark_theme_action = QAction("ダーク", self.main_window, checkable=True)
-
-        self.theme_group.addAction(light_theme_action)
-        self.theme_group.addAction(dark_theme_action)
-        theme_menu.addAction(light_theme_action)
-        theme_menu.addAction(dark_theme_action)
-
-        light_theme_action.triggered.connect(lambda: self._set_theme("light"))
-        dark_theme_action.triggered.connect(lambda: self._set_theme("dark"))
-
-        # Load initial theme state from settings
+        # Dark theme selection is intentionally hidden for now. On Windows, Qt may
+        # still follow the OS palette, so local UI styling should use palette colors.
         settings = load_settings()
-        current_theme = settings.get("theme", "light") # Default to light
-        if current_theme == "dark":
-            dark_theme_action.setChecked(True)
-            self._apply_theme("dark") # Apply initial theme
-        else:
-            light_theme_action.setChecked(True)
-            self._apply_theme("light") # Apply initial theme
-
+        if settings.get("theme") != "light":
+            settings["theme"] = "light"
+            save_settings(settings)
+        self._apply_theme("light")
 
         # Font settings
         font_action = QAction("フォント設定...", self.main_window)
