@@ -937,10 +937,10 @@ class MainWindow(QMainWindow):
         self.authors_note_panel = self._create_authors_note_panel()
         self.main_text_edit = QPlainTextEdit()
         self.main_text_edit.setPlaceholderText("ここに小説本文を入力・編集します...")
-        self.main_text_splitter.addWidget(self.authors_note_panel)
         self.main_text_splitter.addWidget(self.main_text_edit)
-        self.main_text_splitter.setStretchFactor(0, 0)
-        self.main_text_splitter.setStretchFactor(1, 1)
+        self.main_text_splitter.addWidget(self.authors_note_panel)
+        self.main_text_splitter.setStretchFactor(0, 1)
+        self.main_text_splitter.setStretchFactor(1, 0)
         main_text_layout.addWidget(self.main_text_splitter)
         QTimer.singleShot(0, lambda: self._set_authors_note_panel_expanded(False, remember_height=False))
 
@@ -1031,7 +1031,7 @@ class MainWindow(QMainWindow):
 
     def _create_authors_note_panel(self) -> QWidget:
         self._authors_note_panel_expanded = False
-        self._last_authors_note_panel_height = 120
+        self._last_authors_note_panel_height = 140
 
         panel = QWidget()
         panel.setObjectName("authorsNotePanel")
@@ -1049,9 +1049,11 @@ class MainWindow(QMainWindow):
         self.authors_note_toggle_button.setObjectName("authorsNoteToggle")
         self.authors_note_toggle_button.setText("次の展開の指示")
         self.authors_note_toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.authors_note_toggle_button.setArrowType(Qt.RightArrow)
+        self.authors_note_toggle_button.setArrowType(Qt.UpArrow)
         self.authors_note_toggle_button.setCheckable(True)
         self.authors_note_toggle_button.setFocusPolicy(Qt.NoFocus)
+        self.authors_note_toggle_button.setMinimumHeight(26)
+        self.authors_note_toggle_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.authors_note_toggle_button.clicked.connect(
             lambda checked: self._set_authors_note_panel_expanded(checked)
         )
@@ -1068,7 +1070,7 @@ class MainWindow(QMainWindow):
             "主人公エルフ\n"
             "迷子ドラゴン登場"
         )
-        self.authors_note_edit.setMinimumHeight(80)
+        self.authors_note_edit.setMinimumHeight(92)
         card_layout.addWidget(self.authors_note_edit)
 
         panel_layout.addWidget(self.authors_note_card)
@@ -1079,13 +1081,13 @@ class MainWindow(QMainWindow):
         button = getattr(self, "authors_note_toggle_button", None)
         if button is None:
             return 28
-        return button.sizeHint().height() + 10
+        return max(button.sizeHint().height(), button.minimumHeight()) + 2
 
     def _authors_note_expanded_min_height(self) -> int:
         button = getattr(self, "authors_note_toggle_button", None)
         edit = getattr(self, "authors_note_edit", None)
         if button is None or edit is None:
-            return 132
+            return 144
 
         card_vertical_margin = 8
         card_spacing = 4
@@ -1104,14 +1106,14 @@ class MainWindow(QMainWindow):
 
         expanded = bool(expanded)
         sizes = self.main_text_splitter.sizes() if hasattr(self, "main_text_splitter") else []
-        if remember_height and not expanded and sizes and sizes[0] > self._authors_note_collapsed_height() + 8:
-            self._last_authors_note_panel_height = sizes[0]
+        if remember_height and not expanded and len(sizes) > 1 and sizes[1] > self._authors_note_collapsed_height() + 8:
+            self._last_authors_note_panel_height = sizes[1]
 
         collapsed_height = self._authors_note_collapsed_height()
         self._authors_note_panel_expanded = expanded
         self.authors_note_toggle_button.blockSignals(True)
         self.authors_note_toggle_button.setChecked(expanded)
-        self.authors_note_toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.authors_note_toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.UpArrow)
         self.authors_note_toggle_button.blockSignals(False)
         self.authors_note_edit.setVisible(expanded)
 
@@ -1127,7 +1129,7 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "main_text_splitter"):
             total = max(sum(sizes), self.main_text_splitter.height())
-            self.main_text_splitter.setSizes([target_height, max(1, total - target_height)])
+            self.main_text_splitter.setSizes([max(1, total - target_height), target_height])
         self._apply_authors_note_panel_style()
 
     def _apply_authors_note_panel_style(self):
@@ -1147,7 +1149,7 @@ class MainWindow(QMainWindow):
         def tune(color: QColor, amount: int, lighter: bool) -> str:
             return (color.lighter(amount) if lighter else color.darker(amount)).name()
 
-        inner_margin = 4
+        inner_margin = 0
         if self._authors_note_panel_expanded:
             panel_bg = tune(window, 108 if dark_ui else 103, lighter=dark_ui)
             border = tune(highlight, 135 if dark_ui else 115, lighter=dark_ui)
@@ -1156,6 +1158,7 @@ class MainWindow(QMainWindow):
             toggle_text = highlighted_text.name()
             card_border = f"1px solid {border}"
             editor_border = "none"
+            toggle_border = "none"
         else:
             panel_bg = "transparent"
             border = tune(mid, 125 if dark_ui else 110, lighter=not dark_ui)
@@ -1165,6 +1168,7 @@ class MainWindow(QMainWindow):
             toggle_text = text.name()
             card_border = "none"
             editor_border = f"1px solid {border}"
+            toggle_border = f"1px solid {border}"
 
         self.authors_note_panel.layout().setContentsMargins(
             0,
@@ -1192,9 +1196,9 @@ class MainWindow(QMainWindow):
             "QToolButton#authorsNoteToggle {"
             f" background-color: {toggle_bg};"
             f" color: {toggle_text};"
-            f" border: 1px solid {border};"
-            " border-radius: 5px;"
-            " padding: 4px 8px;"
+            f" border: {toggle_border};"
+            " border-radius: 4px;"
+            " padding: 2px 10px;"
             " font-weight: 600;"
             " text-align: left;"
             "}"
