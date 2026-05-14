@@ -123,6 +123,7 @@ class MainWindow(QMainWindow):
         self.setting_edit.textChanged.connect(self._schedule_token_update)
         self.plot_edit.textChanged.connect(self._schedule_token_update)
         self.authors_note_edit.textChanged.connect(self._schedule_token_update)
+        self.authors_note_edit.textChanged.connect(self._update_authors_note_toggle_state)
         self.keywords_widget.tagsChanged.connect(self._schedule_token_update)
         self.genre_widget.tagsChanged.connect(self._schedule_token_update)
         self.rating_combo_details.currentIndexChanged.connect(self._schedule_token_update)
@@ -1115,6 +1116,7 @@ class MainWindow(QMainWindow):
         self.authors_note_toggle_button.setChecked(expanded)
         self.authors_note_toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.UpArrow)
         self.authors_note_toggle_button.blockSignals(False)
+        self._update_authors_note_toggle_state()
         self.authors_note_edit.setVisible(expanded)
 
         if expanded:
@@ -1132,6 +1134,19 @@ class MainWindow(QMainWindow):
             self.main_text_splitter.setSizes([max(1, total - target_height), target_height])
         self._apply_authors_note_panel_style()
 
+    def _update_authors_note_toggle_state(self):
+        if not hasattr(self, "authors_note_toggle_button") or not hasattr(self, "authors_note_edit"):
+            return
+
+        has_note = bool(self.authors_note_edit.toPlainText().strip())
+        if has_note and not self._authors_note_panel_expanded:
+            self.authors_note_toggle_button.setText("次の展開の指示（入力あり）")
+            self.authors_note_toggle_button.setToolTip("次の展開の指示が入力されています。クリックして編集します。")
+        else:
+            self.authors_note_toggle_button.setText("次の展開の指示")
+            self.authors_note_toggle_button.setToolTip("次の展開の指示を開閉します。")
+        self._apply_authors_note_panel_style()
+
     def _apply_authors_note_panel_style(self):
         if not hasattr(self, "authors_note_panel"):
             return
@@ -1145,6 +1160,7 @@ class MainWindow(QMainWindow):
         highlight = palette.color(QPalette.Highlight)
         highlighted_text = palette.color(QPalette.HighlightedText)
         dark_ui = window.lightness() < 128
+        has_note = bool(self.authors_note_edit.toPlainText().strip()) if hasattr(self, "authors_note_edit") else False
 
         def tune(color: QColor, amount: int, lighter: bool) -> str:
             return (color.lighter(amount) if lighter else color.darker(amount)).name()
@@ -1161,11 +1177,11 @@ class MainWindow(QMainWindow):
             toggle_border = "none"
         else:
             panel_bg = "transparent"
-            border = tune(mid, 125 if dark_ui else 110, lighter=not dark_ui)
-            header_bg = tune(button, 112 if dark_ui else 102, lighter=not dark_ui)
+            border = tune(highlight if has_note else mid, 135 if dark_ui else 110, lighter=dark_ui if has_note else not dark_ui)
+            header_bg = tune(highlight if has_note else button, 132 if dark_ui else 122, lighter=dark_ui if has_note else not dark_ui)
             editor_bg = base.name()
             toggle_bg = header_bg
-            toggle_text = text.name()
+            toggle_text = highlighted_text.name() if has_note else text.name()
             card_border = "none"
             editor_border = f"1px solid {border}"
             toggle_border = f"1px solid {border}"
