@@ -1,0 +1,23 @@
+{
+  "current_mode": "generate",
+  "main_text": "一行目。森の入口で少女は足を止めた。\n二行目。風が古い鐘の音を運んできた。\n三行目。木々の影がゆっくりと揺れた。\n四行目。少女は小さな灯りを握りしめた。\n五行目。竜の声が闇の奥から響いた。",
+  "cont_prompt_order": "reference_first",
+  "settings": {
+    "default_rating": "general",
+    "authors_note_display_mode": "legacy"
+  },
+  "ui_data": {
+    "metadata": {
+      "title": "森の竜",
+      "keywords": ["エルフ", "ドラゴン"],
+      "genres": ["ハイファンタジー"],
+      "synopsis": "迷子の少女が森で古い竜と出会う。",
+      "setting": "夜の森には古代語を話す竜がいる。",
+      "plot": "少女は竜から失われた王国の手がかりを得る。",
+      "dialogue_level": "やや多い"
+    },
+    "rating": "r18",
+    "authors_note": "次は竜が少女へ森の禁忌を警告する。",
+    "system_prompt": ""
+  }
+}

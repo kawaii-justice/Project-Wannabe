@@ -1,0 +1,23 @@
+{
+  "current_mode": "generate",
+  "main_text": "",
+  "cont_prompt_order": "reference_first",
+  "settings": {
+    "default_rating": "general",
+    "authors_note_display_mode": "default"
+  },
+  "ui_data": {
+    "metadata": {
+      "title": "森の竜",
+      "keywords": ["エルフ", "ドラゴン"],
+      "genres": ["ハイファンタジー"],
+      "synopsis": "迷子の少女が森で古い竜と出会う。",
+      "setting": "夜の森には古代語を話す竜がいる。",
+      "plot": "少女は竜から失われた王国の手がかりを得る。",
+      "dialogue_level": "やや多い"
+    },
+    "rating": "general",
+    "authors_note": "",
+    "system_prompt": ""
+  }
+}

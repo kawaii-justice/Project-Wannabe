@@ -145,7 +145,10 @@ def determine_task_and_instruction(
     return task_type, instruction_text
 
 
-def _normalize_ui_data(ui_data: dict) -> tuple[Dict[str, str | list[str]], str, str, str]:
+def _normalize_ui_data(
+    ui_data: dict,
+    settings: Optional[dict] = None,
+) -> tuple[Dict[str, str | list[str]], str, str, str]:
     raw_metadata = ui_data.get("metadata", {})
     rating_override = ui_data.get("rating")
     raw_authors_note = ui_data.get("authors_note", "")
@@ -163,7 +166,7 @@ def _normalize_ui_data(ui_data: dict) -> tuple[Dict[str, str | list[str]], str, 
     if metadata["dialogue_level"] is None:
         del metadata["dialogue_level"]
 
-    settings = load_settings()
+    settings = settings or load_settings()
     rating_to_use = rating_override or settings.get("default_rating", DEFAULT_SETTINGS["default_rating"])
     authors_note = evaluate_dynamic_prompt(raw_authors_note)
     system_prompt = evaluate_dynamic_prompt(raw_system_prompt).strip()
@@ -175,9 +178,11 @@ def build_prompt_components(
     current_mode: str,
     main_text: str,
     ui_data: dict,
-    cont_prompt_order: str = "reference_first"
+    cont_prompt_order: str = "reference_first",
+    settings: Optional[dict] = None,
 ) -> PromptComponents:
-    metadata, rating_to_use, authors_note, system_prompt = _normalize_ui_data(ui_data)
+    settings = settings or load_settings()
+    metadata, rating_to_use, authors_note, system_prompt = _normalize_ui_data(ui_data, settings)
     task_type, base_instruction_text = determine_task_and_instruction(current_mode, main_text, metadata)
 
     metadata_input_string = format_metadata(metadata, mode=current_mode)
@@ -243,7 +248,6 @@ def build_prompt_components(
 
         main_part_block = f"【本文】\n```\n{main_part}\n```" if main_part else None
         reference_block = f"【参考情報】\n```\n{metadata_input_string}\n```" if metadata_input_string else None
-        settings = load_settings()
         display_mode = settings.get("authors_note_display_mode", "default")
         if display_mode == "legacy":
             authors_note_block = f"【オーサーズノート】\n```\n{authors_note.strip()}\n```" if authors_note.strip() else None
@@ -292,10 +296,11 @@ def build_prompt(
     current_mode: str,
     main_text: str,
     ui_data: dict,
-    cont_prompt_order: str = "reference_first"
+    cont_prompt_order: str = "reference_first",
+    settings: Optional[dict] = None,
 ) -> str:
     return render_mistral_prompt(
-        build_prompt_components(current_mode, main_text, ui_data, cont_prompt_order)
+        build_prompt_components(current_mode, main_text, ui_data, cont_prompt_order, settings=settings)
     )
 
 
@@ -303,9 +308,16 @@ def build_chat_messages(
     current_mode: str,
     main_text: str,
     ui_data: dict,
-    cont_prompt_order: str = "reference_first"
+    cont_prompt_order: str = "reference_first",
+    settings: Optional[dict] = None,
 ) -> list[dict[str, str]]:
-    components = build_prompt_components(current_mode, main_text, ui_data, cont_prompt_order)
+    components = build_prompt_components(
+        current_mode,
+        main_text,
+        ui_data,
+        cont_prompt_order,
+        settings=settings,
+    )
     messages: list[dict[str, str]] = []
 
     if components.system_prompt:
@@ -358,12 +370,12 @@ async def build_prompt_with_compression(
 
     available_ctx = get_available_context(true_ctx, max_out)
     if available_ctx is None:
-        prompt = build_prompt(current_mode, main_text, ui_data, cont_prompt_order)
+        prompt = build_prompt(current_mode, main_text, ui_data, cont_prompt_order, settings=settings)
         total = await count_tokens(base_url, prompt) or 0
         return prompt, total, False, (len(main_text) or None), (len(main_text) or None)
 
     def _build(mt: str) -> str:
-        return build_prompt(current_mode, mt, ui_data, cont_prompt_order)
+        return build_prompt(current_mode, mt, ui_data, cont_prompt_order, settings=settings)
 
     prompt = _build(main_text)
     total_tokens = await count_tokens(base_url, prompt) or 0
@@ -458,12 +470,12 @@ async def build_chat_messages_with_compression(
 
     available_ctx = get_available_context(true_ctx, max_out)
     if available_ctx is None:
-        messages = build_chat_messages(current_mode, main_text, ui_data, cont_prompt_order)
+        messages = build_chat_messages(current_mode, main_text, ui_data, cont_prompt_order, settings=settings)
         total = await count_tokens(base_url, serialize_chat_messages_for_token_count(messages)) or 0
         return messages, total, False, (len(main_text) or None), (len(main_text) or None)
 
     def _build(mt: str) -> list[dict[str, str]]:
-        return build_chat_messages(current_mode, mt, ui_data, cont_prompt_order)
+        return build_chat_messages(current_mode, mt, ui_data, cont_prompt_order, settings=settings)
 
     messages = _build(main_text)
     total_tokens = await count_tokens(base_url, serialize_chat_messages_for_token_count(messages)) or 0
