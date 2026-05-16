@@ -72,10 +72,8 @@ class MainWindow(QMainWindow):
         # Instantiate MenuHandler
         self.menu_handler = MenuHandler(self)
 
-        # Placeholders for IDEA UI elements
-        self.idea_controls_widget = None
-        self.idea_item_combo = None
-        self.idea_fast_mode_check = None
+        # Placeholder for the extracted details panel, populated during UI creation.
+        self.details_panel = None
         self.infinite_warning_shown = False # Flag for infinite gen warning
 
         # Token tracking variables
@@ -118,18 +116,11 @@ class MainWindow(QMainWindow):
  
     def _connect_token_update_signals(self):
         self.main_text_edit.textChanged.connect(self._schedule_token_update)
-        self.title_edit.textChanged.connect(self._schedule_token_update)
-        self.synopsis_edit.textChanged.connect(self._schedule_token_update)
-        self.setting_edit.textChanged.connect(self._schedule_token_update)
-        self.plot_edit.textChanged.connect(self._schedule_token_update)
+        self.details_panel.details_changed.connect(self._schedule_token_update)
+        self.details_panel.thinking_prefill_enabled_changed.connect(
+            self._update_assistant_thinking_prefill_state
+        )
         self.authors_note_edit.textChanged.connect(self._schedule_token_update)
-        self.keywords_widget.tagsChanged.connect(self._schedule_token_update)
-        self.genre_widget.tagsChanged.connect(self._schedule_token_update)
-        self.rating_combo_details.currentIndexChanged.connect(self._schedule_token_update)
-        self.dialogue_level_combo.currentIndexChanged.connect(self._schedule_token_update)
-        self.assistant_thinking_prefill_checkbox.toggled.connect(self._schedule_token_update)
-        self.assistant_thinking_prefill_checkbox.toggled.connect(self._update_assistant_thinking_prefill_state)
-        self.assistant_thinking_prefill_edit.textChanged.connect(self._schedule_token_update)
         self.thinking_mode_checkbox.toggled.connect(self._schedule_token_update)
 
     def _schedule_token_update(self, *args):
@@ -213,18 +204,11 @@ class MainWindow(QMainWindow):
         ).strip()
 
     def _get_project_thinking_prefill_text(self) -> str:
-        checkbox = getattr(self, "assistant_thinking_prefill_checkbox", None)
-        editor = getattr(self, "assistant_thinking_prefill_edit", None)
+        details_panel = getattr(self, "details_panel", None)
         thinking_checkbox = getattr(self, "thinking_mode_checkbox", None)
-        if (
-            checkbox is None
-            or editor is None
-            or thinking_checkbox is None
-            or not thinking_checkbox.isChecked()
-            or not checkbox.isChecked()
-        ):
+        if details_panel is None or thinking_checkbox is None:
             return ""
-        return editor.toPlainText().strip()
+        return details_panel.get_active_thinking_prefill_text(thinking_checkbox.isChecked())
 
     def _build_project_thinking_prefill_block(self, text: str, settings: Optional[Dict[str, object]] = None) -> str:
         if not text.strip():
@@ -243,28 +227,14 @@ class MainWindow(QMainWindow):
     def _should_include_project_thinking_prefill(self) -> bool:
         return bool(self._build_project_thinking_prefill_block(self._get_project_thinking_prefill_text()))
 
-    def _update_assistant_thinking_prefill_state(self):
-        checkbox = getattr(self, "assistant_thinking_prefill_checkbox", None)
-        editor = getattr(self, "assistant_thinking_prefill_edit", None)
-        transfer_button = getattr(self, "assistant_thinking_prefill_transfer_button", None)
+    def _update_assistant_thinking_prefill_state(self, *args):
+        details_panel = getattr(self, "details_panel", None)
         thinking_checkbox = getattr(self, "thinking_mode_checkbox", None)
-        if checkbox is None or editor is None or thinking_checkbox is None:
+        if details_panel is None or thinking_checkbox is None:
             return
 
         enabled = thinking_checkbox.isEnabled() and thinking_checkbox.isChecked()
-        if not enabled and checkbox.isChecked():
-            checkbox.setChecked(False)
-        checkbox.setEnabled(enabled)
-        editor.setEnabled(enabled)
-        if transfer_button is not None:
-            transfer_button.setEnabled(enabled)
-        tooltip = (
-            "思考モードが有効な時だけ、ここに入力した思考をassistant prefillとして固定します。"
-            if enabled
-            else "思考モードを有効にすると使用できます。"
-        )
-        checkbox.setToolTip(tooltip)
-        editor.setToolTip(tooltip)
+        details_panel.set_thinking_prefill_available(enabled)
 
     async def _get_project_thinking_prefill_token_reserve(self, base_url: str) -> int:
         project_thought_block = self._build_project_thinking_prefill_block(
@@ -1193,13 +1163,12 @@ class MainWindow(QMainWindow):
 
         editable_edits = [
             (self.main_text_edit, protected_ghost_spans),
-            (self.synopsis_edit, None),
-            (self.setting_edit, None),
-            (self.plot_edit, None),
             (self.authors_note_edit, None),
-            (self.assistant_thinking_prefill_edit, None),
             (self.memo_edit, None),
         ]
+        editable_edits.extend(
+            (edit, None) for edit in self.details_panel.get_plain_text_edits_for_highlighting()
+        )
         for edit, protected_provider in editable_edits:
             self._syntax_highlighters.append(
                 DynamicPromptSyntaxHighlighter(edit, protected_spans_provider=protected_provider)
@@ -1305,9 +1274,8 @@ class MainWindow(QMainWindow):
         # Only proceed if status is idle
         # --- IDEA Mode Logic ---
         if self.current_mode == "idea":
-            selected_item_index = self.idea_item_combo.currentIndex()
-            selected_item_key = self.idea_item_combo.itemData(selected_item_index) # Get internal key ('all', 'title', etc.)
-            fast_mode_enabled = self.idea_fast_mode_check.isChecked()
+            selected_item_key = self.details_panel.get_selected_idea_item_key()
+            fast_mode_enabled = self.details_panel.is_idea_fast_mode_enabled()
             if self.thinking_mode_checkbox.isChecked():
                 fast_mode_enabled = False
             ui_inputs = self._get_metadata_from_ui()["metadata"] # Get only metadata part
@@ -1352,7 +1320,8 @@ class MainWindow(QMainWindow):
             self._update_ui_for_generation_start() # Update UI (e.g., status bar)
 
             # Use unified separator format including counter
-            separator = f"\n--- アイデア生成 ({self.idea_item_combo.currentText()}) ({self.output_block_counter}) ---\n"
+            item_text = self.details_panel.get_selected_idea_item_text()
+            separator = f"\n--- アイデア生成 ({item_text}) ({self.output_block_counter}) ---\n"
             self._append_to_output(separator)
 
             # IDEA "all" item or fast mode should stream
@@ -1772,9 +1741,8 @@ class MainWindow(QMainWindow):
         def prepare_idea_params():
             nonlocal final_prompt, final_messages, final_assistant_prefill, stop_sequence, fast_mode_enabled, selected_item_key, processor, current_max_length
             try:
-                selected_item_index = self.idea_item_combo.currentIndex()
-                selected_item_key = self.idea_item_combo.itemData(selected_item_index)
-                fast_mode_enabled = self.idea_fast_mode_check.isChecked()
+                selected_item_key = self.details_panel.get_selected_idea_item_key()
+                fast_mode_enabled = self.details_panel.is_idea_fast_mode_enabled()
                 if self.thinking_mode_checkbox.isChecked():
                     fast_mode_enabled = False
                 ui_inputs = self._get_metadata_from_ui()["metadata"]
@@ -1986,8 +1954,8 @@ class MainWindow(QMainWindow):
                 # --- Define Separator Dynamically (Inside the loop for immediate mode) ---
                 # This needs to happen *after* potential parameter updates in immediate mode
                 current_item_text_for_separator = "N/A" # Default
-                if self.current_mode == "idea" and self.idea_item_combo:
-                    current_item_text_for_separator = self.idea_item_combo.currentText()
+                if self.current_mode == "idea" and self.details_panel:
+                    current_item_text_for_separator = self.details_panel.get_selected_idea_item_text()
 
                 if self.current_mode == "idea":
                     separator = f"\n--- アイデア生成 ({current_item_text_for_separator}) ({self.output_block_counter}) ---\n"
@@ -2107,37 +2075,21 @@ class MainWindow(QMainWindow):
 
     def _get_metadata_from_ui(self) -> dict:
         """Retrieves metadata, rating, and author's note from the UI widgets."""
-        metadata = { # Initialize the dictionary first
-            "title": self.title_edit.text(),
-            "keywords": self.keywords_widget.get_tags(),
-            "genres": self.genre_widget.get_tags(),
-            "synopsis": self.synopsis_edit.toPlainText(),
-            "setting": self.setting_edit.toPlainText(),
-            "plot": self.plot_edit.toPlainText(),
-        }
-        # Add dialogue level if selected
-        selected_level = self.dialogue_level_combo.currentText()
-        if selected_level != "指定なし":
-            metadata["dialogue_level"] = selected_level # Add to the dictionary
-
-        # Get the selected rating from the details tab combo box
-        selected_rating = self.rating_combo_details.currentData()
+        details_data = self.details_panel.get_generation_data()
         # Get the author's note
         authors_note = self.authors_note_edit.toPlainText()
         settings = load_settings()
         system_prompt = settings.get("system_prompt", "")
         enable_thinking = self.thinking_mode_checkbox.isChecked()
-        assistant_thinking_prefill_enabled = self.assistant_thinking_prefill_checkbox.isChecked()
-        assistant_thinking_prefill = self.assistant_thinking_prefill_edit.toPlainText()
 
         return {
-            "metadata": metadata,
-            "rating": selected_rating,
+            "metadata": details_data["metadata"],
+            "rating": details_data["rating"],
             "authors_note": authors_note,
             "system_prompt": system_prompt,
             "enable_thinking": enable_thinking,
-            "assistant_thinking_prefill_enabled": assistant_thinking_prefill_enabled,
-            "assistant_thinking_prefill": assistant_thinking_prefill,
+            "assistant_thinking_prefill_enabled": details_data["assistant_thinking_prefill_enabled"],
+            "assistant_thinking_prefill": details_data["assistant_thinking_prefill"],
         }
 
     async def _cleanup(self): # Make cleanup async
@@ -2228,8 +2180,7 @@ class MainWindow(QMainWindow):
         if not selected_text:
             self.status_bar.showMessage("出力エリアで転記したい思考を選択してください。", 2000)
             return
-        self.assistant_thinking_prefill_edit.setPlainText(selected_text)
-        self.assistant_thinking_prefill_checkbox.setChecked(True)
+        self.details_panel.set_thinking_prefill_text(selected_text, enabled=True)
         self.status_bar.showMessage("選択範囲を思考prefillに転記しました。", 2000)
 
     @Slot()
@@ -2255,22 +2206,7 @@ class MainWindow(QMainWindow):
 
         try:
             normalized_value = normalize_metadata_value(metadata_key, extracted_value)
-            if metadata_key == "title":
-                self.title_edit.setText(normalized_value)
-            elif metadata_key == "keywords":
-                self.keywords_widget.set_tags(normalized_value)
-            elif metadata_key == "genres":
-                self.genre_widget.set_tags(normalized_value)
-            elif metadata_key == "synopsis":
-                self.synopsis_edit.setPlainText(normalized_value)
-            elif metadata_key == "setting":
-                self.setting_edit.setPlainText(normalized_value)
-            elif metadata_key == "plot":
-                self.plot_edit.setPlainText(normalized_value)
-            else:
-                print(f"Error: No widget defined for key '{metadata_key}'.")
-                return
-
+            self.details_panel.apply_metadata_value(metadata_key, normalized_value)
             self.status_bar.showMessage(f"「{target_name}」を詳細情報に転記しました。", 2000)
 
         except Exception as e:
@@ -2288,8 +2224,7 @@ class MainWindow(QMainWindow):
             return
         self.current_mode = "generate"
         self.status_bar.showMessage("モード: 小説生成", 2000)
-        if self.idea_controls_widget:
-            self.idea_controls_widget.hide()
+        self.details_panel.set_idea_controls_visible(False)
         # 小説生成モードに戻った時、本文補完機能のチェックボックスを有効化（チェック状態はOFFに戻す）
         self.autocomplete_checkbox.setEnabled(True)
         self.autocomplete_checkbox.setChecked(False)
@@ -2311,19 +2246,18 @@ class MainWindow(QMainWindow):
             return
         self.current_mode = "idea"
         self.status_bar.showMessage("モード: アイデア出し", 2000)
-        if self.idea_controls_widget:
-            self.idea_controls_widget.show()
-            self._update_idea_fast_mode_state() # Update checkbox state when switching to idea mode
-            # アイデア出しモードでは本文補完機能を無効化
-            self.autocomplete_checkbox.setEnabled(False)
-            self.autocomplete_checkbox.setChecked(False)
-            if hasattr(self, 'autocomplete_manager'):
-                self.autocomplete_manager.set_enabled(False)
-            
-            # ショートカット表示を更新
-            self._update_shortcut_display()
-            self._schedule_token_update()
-            self._update_thinking_checkbox_ui()
+        self.details_panel.set_idea_controls_visible(True)
+        self._update_idea_fast_mode_state() # Update checkbox state when switching to idea mode
+        # アイデア出しモードでは本文補完機能を無効化
+        self.autocomplete_checkbox.setEnabled(False)
+        self.autocomplete_checkbox.setChecked(False)
+        if hasattr(self, 'autocomplete_manager'):
+            self.autocomplete_manager.set_enabled(False)
+
+        # ショートカット表示を更新
+        self._update_shortcut_display()
+        self._schedule_token_update()
+        self._update_thinking_checkbox_ui()
 
     @Slot()
     def _toggle_autocomplete_mode(self, checked):
@@ -2352,19 +2286,19 @@ class MainWindow(QMainWindow):
     @Slot()
     def _update_idea_fast_mode_state(self):
         """Enables/disables the fast mode checkbox based on combo box selection."""
-        if not self.idea_item_combo or not self.idea_fast_mode_check:
+        details_panel = getattr(self, "details_panel", None)
+        if details_panel is None:
             return
 
-        selected_item_index = self.idea_item_combo.currentIndex()
-        selected_item_key = self.idea_item_combo.itemData(selected_item_index)
+        selected_item_key = details_panel.get_selected_idea_item_key()
         thinking_requested = self.thinking_mode_checkbox.isChecked()
 
         # Disable fast mode for "全部", the first item ("タイトル"), or whenever thinking mode is requested.
-        if selected_item_key == 'all' or selected_item_key == IDEA_ITEM_ORDER[0] or thinking_requested:
-            self.idea_fast_mode_check.setEnabled(False)
-            self.idea_fast_mode_check.setChecked(False) # Uncheck when disabled
-        else:
-            self.idea_fast_mode_check.setEnabled(True)
+        details_panel.set_idea_fast_mode_available(
+            selected_item_key != 'all'
+            and selected_item_key != IDEA_ITEM_ORDER[0]
+            and not thinking_requested
+        )
 
     def eventFilter(self, obj, event):
         """

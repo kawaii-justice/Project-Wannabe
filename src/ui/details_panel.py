@@ -1,3 +1,5 @@
+from typing import Any
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -18,8 +20,10 @@ from src.ui.widgets import CollapsibleSection, TagWidget
 
 
 class DetailsPanel(QWidget):
+    details_changed = Signal()
     transfer_requested = Signal(str)
     idea_item_changed = Signal()
+    thinking_prefill_enabled_changed = Signal(bool)
     thinking_prefill_transfer_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):
@@ -43,8 +47,194 @@ class DetailsPanel(QWidget):
         self._create_story_detail_sections(details_layout)
         self._create_dialogue_section(details_layout)
         self._create_thinking_prefill_section(details_layout)
+        self._connect_change_signals()
 
         details_layout.addStretch()
+
+    def get_project_details(self) -> dict[str, Any]:
+        return {
+            "title": self.get_title(),
+            "keywords": self.keywords_widget.get_tags(),
+            "genres": self.genre_widget.get_tags(),
+            "synopsis": self.synopsis_edit.toPlainText(),
+            "setting": self.setting_edit.toPlainText(),
+            "plot": self.plot_edit.toPlainText(),
+            "dialogue_level": self.dialogue_level_combo.currentText(),
+            "assistant_thinking_prefill_enabled": self.assistant_thinking_prefill_checkbox.isChecked(),
+            "assistant_thinking_prefill": self.assistant_thinking_prefill_edit.toPlainText(),
+            "rating": self.rating_combo_details.currentData(),
+        }
+
+    def apply_project_details(self, details: dict[str, Any]):
+        details = details or {}
+        self.title_edit.setText(self._as_text(details.get("title")))
+        self.keywords_widget.set_tags(self._as_tag_list(details.get("keywords")))
+        self.genre_widget.set_tags(self._as_tag_list(details.get("genres")))
+        self.synopsis_edit.setPlainText(self._as_text(details.get("synopsis")))
+        self.setting_edit.setPlainText(self._as_text(details.get("setting")))
+        self.plot_edit.setPlainText(self._as_text(details.get("plot")))
+        self.assistant_thinking_prefill_checkbox.setChecked(
+            bool(details.get("assistant_thinking_prefill_enabled", False))
+        )
+        self.assistant_thinking_prefill_edit.setPlainText(
+            self._as_text(details.get("assistant_thinking_prefill"))
+        )
+        self.set_dialogue_level(self._as_text(details.get("dialogue_level")) or "指定なし")
+        self.set_rating(self._as_text(details.get("rating")) or "general")
+
+    def get_generation_data(self) -> dict[str, Any]:
+        details = self.get_project_details()
+        metadata = {
+            "title": details["title"],
+            "keywords": details["keywords"],
+            "genres": details["genres"],
+            "synopsis": details["synopsis"],
+            "setting": details["setting"],
+            "plot": details["plot"],
+        }
+        if details["dialogue_level"] != "指定なし":
+            metadata["dialogue_level"] = details["dialogue_level"]
+
+        return {
+            "metadata": metadata,
+            "rating": details["rating"],
+            "assistant_thinking_prefill_enabled": details["assistant_thinking_prefill_enabled"],
+            "assistant_thinking_prefill": details["assistant_thinking_prefill"],
+        }
+
+    def apply_metadata_value(self, metadata_key: str, value: Any):
+        if metadata_key == "title":
+            self.title_edit.setText(self._as_text(value))
+        elif metadata_key == "keywords":
+            self.keywords_widget.set_tags(self._as_tag_list(value))
+        elif metadata_key == "genres":
+            self.genre_widget.set_tags(self._as_tag_list(value))
+        elif metadata_key == "synopsis":
+            self.synopsis_edit.setPlainText(self._as_text(value))
+        elif metadata_key == "setting":
+            self.setting_edit.setPlainText(self._as_text(value))
+        elif metadata_key == "plot":
+            self.plot_edit.setPlainText(self._as_text(value))
+        else:
+            raise KeyError(metadata_key)
+
+    def get_title(self) -> str:
+        return self.title_edit.text()
+
+    def set_rating(self, rating: str):
+        rating_index = self.rating_combo_details.findData(rating)
+        if rating_index == -1:
+            rating_index = self.rating_combo_details.findData("general")
+        if rating_index != -1:
+            self.rating_combo_details.setCurrentIndex(rating_index)
+
+    def set_dialogue_level(self, level: str):
+        if self.dialogue_level_combo.findText(level) == -1:
+            level = "指定なし"
+        self.dialogue_level_combo.setCurrentText(level)
+
+    def set_thinking_prefill_available(self, enabled: bool):
+        if not enabled and self.assistant_thinking_prefill_checkbox.isChecked():
+            self.assistant_thinking_prefill_checkbox.setChecked(False)
+        self.assistant_thinking_prefill_checkbox.setEnabled(enabled)
+        self.assistant_thinking_prefill_edit.setEnabled(enabled)
+        self.assistant_thinking_prefill_transfer_button.setEnabled(enabled)
+        tooltip = (
+            "思考モードが有効な時だけ、ここに入力した思考をassistant prefillとして固定します。"
+            if enabled
+            else "思考モードを有効にすると使用できます。"
+        )
+        self.assistant_thinking_prefill_checkbox.setToolTip(tooltip)
+        self.assistant_thinking_prefill_edit.setToolTip(tooltip)
+
+    def get_active_thinking_prefill_text(self, thinking_enabled: bool) -> str:
+        if not thinking_enabled or not self.assistant_thinking_prefill_checkbox.isChecked():
+            return ""
+        return self.assistant_thinking_prefill_edit.toPlainText().strip()
+
+    def set_thinking_prefill_text(self, text: str, enabled: bool = True):
+        self.assistant_thinking_prefill_edit.setPlainText(text or "")
+        self.assistant_thinking_prefill_checkbox.setChecked(enabled)
+
+    def set_idea_controls_visible(self, visible: bool):
+        self.idea_controls_widget.setVisible(visible)
+
+    def get_selected_idea_item_key(self) -> str:
+        selected_item_index = self.idea_item_combo.currentIndex()
+        return self.idea_item_combo.itemData(selected_item_index)
+
+    def get_selected_idea_item_text(self) -> str:
+        return self.idea_item_combo.currentText()
+
+    def is_idea_fast_mode_enabled(self) -> bool:
+        return self.idea_fast_mode_check.isChecked()
+
+    def set_idea_fast_mode_available(self, enabled: bool):
+        self.idea_fast_mode_check.setEnabled(enabled)
+        if not enabled:
+            self.idea_fast_mode_check.setChecked(False)
+
+    def get_plain_text_edits_for_highlighting(self) -> tuple[QPlainTextEdit, ...]:
+        return (
+            self.synopsis_edit,
+            self.setting_edit,
+            self.plot_edit,
+            self.assistant_thinking_prefill_edit,
+        )
+
+    def get_search_targets(self) -> dict[str, QWidget]:
+        return {
+            "title": self.title_edit,
+            "synopsis": self.synopsis_edit,
+            "setting": self.setting_edit,
+            "plot": self.plot_edit,
+            "assistant_thinking_prefill": self.assistant_thinking_prefill_edit,
+        }
+
+    def get_font_targets(self) -> tuple[QWidget, ...]:
+        return (
+            self.title_edit,
+            self.keywords_widget,
+            self.genre_widget,
+            self.synopsis_edit,
+            self.setting_edit,
+            self.plot_edit,
+            self.assistant_thinking_prefill_edit,
+        )
+
+    def _connect_change_signals(self):
+        self.title_edit.textChanged.connect(self._emit_details_changed)
+        self.keywords_widget.tagsChanged.connect(self._emit_details_changed)
+        self.genre_widget.tagsChanged.connect(self._emit_details_changed)
+        self.synopsis_edit.textChanged.connect(self._emit_details_changed)
+        self.setting_edit.textChanged.connect(self._emit_details_changed)
+        self.plot_edit.textChanged.connect(self._emit_details_changed)
+        self.rating_combo_details.currentIndexChanged.connect(self._emit_details_changed)
+        self.dialogue_level_combo.currentIndexChanged.connect(self._emit_details_changed)
+        self.assistant_thinking_prefill_checkbox.toggled.connect(
+            self._on_thinking_prefill_enabled_changed
+        )
+        self.assistant_thinking_prefill_edit.textChanged.connect(self._emit_details_changed)
+
+    def _emit_details_changed(self, *args):
+        self.details_changed.emit()
+
+    def _on_thinking_prefill_enabled_changed(self, checked: bool):
+        self.details_changed.emit()
+        self.thinking_prefill_enabled_changed.emit(checked)
+
+    def _as_text(self, value: Any) -> str:
+        return "" if value is None else str(value)
+
+    def _as_tag_list(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            parts = value.replace("、", ",").split(",")
+            return [part.strip() for part in parts if part.strip()]
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return [str(value).strip()] if str(value).strip() else []
 
     def _create_idea_controls(self, details_layout: QVBoxLayout):
         self.idea_controls_widget = QWidget()

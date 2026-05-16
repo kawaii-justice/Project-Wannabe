@@ -33,18 +33,11 @@ class SearchHandler(QObject):
             self.target_widgets["main_text"] = self.main_window.main_text_edit
         if hasattr(self.main_window, 'memo_edit'):
             self.target_widgets["memo"] = self.main_window.memo_edit
-        if hasattr(self.main_window, 'title_edit'):
-            self.target_widgets["title"] = self.main_window.title_edit
-        if hasattr(self.main_window, 'synopsis_edit'):
-            self.target_widgets["synopsis"] = self.main_window.synopsis_edit
-        if hasattr(self.main_window, 'setting_edit'):
-            self.target_widgets["setting"] = self.main_window.setting_edit
-        if hasattr(self.main_window, 'plot_edit'):
-            self.target_widgets["plot"] = self.main_window.plot_edit
+        details_panel = getattr(self.main_window, "details_panel", None)
+        if details_panel is not None:
+            self.target_widgets.update(details_panel.get_search_targets())
         if hasattr(self.main_window, 'authors_note_edit'):
             self.target_widgets["authors_note"] = self.main_window.authors_note_edit
-        if hasattr(self.main_window, 'assistant_thinking_prefill_edit'):
-            self.target_widgets["assistant_thinking_prefill"] = self.main_window.assistant_thinking_prefill_edit
     
     def create_search_actions(self):
         """検索関連のアクションを作成"""

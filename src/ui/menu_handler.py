@@ -198,7 +198,8 @@ class MenuHandler:
                 return
 
             include_title = checkbox.isChecked()
-            current_title = self.main_window.title_edit.text() if hasattr(self.main_window, 'title_edit') else None
+            details_panel = getattr(self.main_window, "details_panel", None)
+            current_title = details_panel.get_title() if details_panel is not None else None
 
             if include_title and not current_title:
                 # 警告を出してユーザーに確認
@@ -257,12 +258,7 @@ class MenuHandler:
         """Collects data from UI elements to be saved."""
         # *** FIX: More robust check for attribute existence ***
         required_ui = {
-            'title': 'title_edit', 'keywords': 'keywords_widget', 'genres': 'genre_widget',
-            'synopsis': 'synopsis_edit', 'setting': 'setting_edit', 'plot': 'plot_edit',
-            'dialogue_level': 'dialogue_level_combo',
-            'assistant_thinking_prefill_enabled': 'assistant_thinking_prefill_checkbox',
-            'assistant_thinking_prefill': 'assistant_thinking_prefill_edit',
-            'rating': 'rating_combo_details', # Add rating combo from details tab
+            'details_panel': 'details_panel',
             'authors_note': 'authors_note_edit', # Add authors_note edit
             'main_text': 'main_text_edit', 'memo': 'memo_edit'
         }
@@ -270,19 +266,8 @@ class MenuHandler:
         if missing_attrs:
             raise ValueError(f"メインウィンドウに必要なUI要素が見つかりません: {', '.join(missing_attrs)}")
 
-        details = {
-            "title": self.main_window.title_edit.text(),
-            "keywords": self.main_window.keywords_widget.get_tags(),
-            "genres": self.main_window.genre_widget.get_tags(),
-            "synopsis": self.main_window.synopsis_edit.toPlainText(),
-            "setting": self.main_window.setting_edit.toPlainText(),
-            "plot": self.main_window.plot_edit.toPlainText(),
-            "dialogue_level": self.main_window.dialogue_level_combo.currentText(),
-            "assistant_thinking_prefill_enabled": self.main_window.assistant_thinking_prefill_checkbox.isChecked(),
-            "assistant_thinking_prefill": self.main_window.assistant_thinking_prefill_edit.toPlainText(),
-            "rating": self.main_window.rating_combo_details.currentData(), # Save selected rating data
-            "authors_note": self.main_window.authors_note_edit.toPlainText(), # Add authors_note
-        }
+        details = self.main_window.details_panel.get_project_details()
+        details["authors_note"] = self.main_window.authors_note_edit.toPlainText()
         main_text = self.main_window.main_text_edit.toPlainText()
         memo_text = self.main_window.memo_edit.toPlainText()
 
@@ -296,13 +281,8 @@ class MenuHandler:
         """Applies loaded data to UI elements."""
         # *** FIX: More robust check and application ***
         required_ui = {
-            'title': 'title_edit', 'keywords': 'keywords_widget', 'genres': 'genre_widget',
-            'synopsis': 'synopsis_edit', 'setting': 'setting_edit', 'plot': 'plot_edit',
+            'details_panel': 'details_panel',
             'authors_note': 'authors_note_edit', # Add authors_note edit check
-            'assistant_thinking_prefill_enabled': 'assistant_thinking_prefill_checkbox',
-            'assistant_thinking_prefill': 'assistant_thinking_prefill_edit',
-            'dialogue_level': 'dialogue_level_combo',
-            'rating': 'rating_combo_details', # Add rating combo from details tab
             'main_text': 'main_text_edit', 'memo': 'memo_edit',
             'output_clear': 'output_text_edit', 'output_counter': 'output_block_counter'
         }
@@ -312,31 +292,10 @@ class MenuHandler:
 
         details = data.get("details", {})
         # Apply details safely
-        self.main_window.title_edit.setText(details.get("title", "") or "") # Ensure string
-        self.main_window.keywords_widget.set_tags(details.get("keywords", []) or []) # Ensure list
-        self.main_window.genre_widget.set_tags(details.get("genres", []) or []) # Ensure list
-        self.main_window.synopsis_edit.setPlainText(details.get("synopsis", "") or "")
-        self.main_window.setting_edit.setPlainText(details.get("setting", "") or "")
-        self.main_window.plot_edit.setPlainText(details.get("plot", "") or "")
+        self.main_window.details_panel.apply_project_details(details)
         self.main_window.authors_note_edit.setPlainText(details.get("authors_note", "") or "") # Add authors_note
-        self.main_window.assistant_thinking_prefill_checkbox.setChecked(
-            bool(details.get("assistant_thinking_prefill_enabled", False))
-        )
-        self.main_window.assistant_thinking_prefill_edit.setPlainText(
-            details.get("assistant_thinking_prefill", "") or ""
-        )
         if hasattr(self.main_window, "_update_assistant_thinking_prefill_state"):
             self.main_window._update_assistant_thinking_prefill_state()
-        # Apply dialogue level safely
-        self.main_window.dialogue_level_combo.setCurrentText(details.get("dialogue_level", "指定なし") or "指定なし")
-        # Apply rating safely
-        loaded_rating = details.get("rating", "general") or "general" # Default to general if missing/empty
-        rating_index = self.main_window.rating_combo_details.findData(loaded_rating)
-        if rating_index != -1:
-            self.main_window.rating_combo_details.setCurrentIndex(rating_index)
-        else: # Fallback if loaded rating value is invalid
-            self.main_window.rating_combo_details.setCurrentIndex(self.main_window.rating_combo_details.findData("general"))
-
 
         # Apply main text and memo safely
         self.main_window.main_text_edit.setPlainText(data.get("main_text", "") or "") # Ensure string
@@ -612,12 +571,15 @@ class MenuHandler:
         # Add main text areas if they exist
         for attr_name in [
             'main_text_edit', 'output_text_edit', 'output_blocks_scroll', 'output_blocks_widget',
-            'memo_edit', 'synopsis_edit', 'setting_edit', 'plot_edit', 'title_edit',
-            'authors_note_edit', 'assistant_thinking_prefill_edit',
+            'memo_edit', 'authors_note_edit',
         ]:
             widget = getattr(self.main_window, attr_name, None)
             if widget and isinstance(widget, (QLineEdit, QPlainTextEdit, QTextEdit, QTextBrowser, QWidget)):
                 widgets_to_update.append(widget)
+
+        details_panel = getattr(self.main_window, "details_panel", None)
+        if details_panel is not None:
+            widgets_to_update.extend(details_panel.get_font_targets())
 
         widgets_to_update.extend(self.main_window.findChildren(QTextBrowser))
 

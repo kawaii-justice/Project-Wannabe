@@ -65,6 +65,63 @@ class DetailsPanelTest(unittest.TestCase):
 
         self.assertEqual(emitted, [True])
 
+    def test_project_details_round_trip(self):
+        panel = self.make_panel()
+        details = {
+            "title": "森の竜",
+            "keywords": ["エルフ", "ドラゴン"],
+            "genres": ["ファンタジー"],
+            "synopsis": "森で竜に出会う。",
+            "setting": "古い森。",
+            "plot": "迷子になり、竜と会話する。",
+            "dialogue_level": "多い",
+            "assistant_thinking_prefill_enabled": True,
+            "assistant_thinking_prefill": "慎重に伏線を置く。",
+            "rating": "r18",
+        }
+
+        panel.apply_project_details(details)
+
+        self.assertEqual(panel.get_project_details(), details)
+
+    def test_generation_data_omits_unspecified_dialogue_level(self):
+        panel = self.make_panel()
+        panel.title_edit.setText("森の竜")
+        panel.dialogue_level_combo.setCurrentText("指定なし")
+
+        generation_data = panel.get_generation_data()
+
+        self.assertEqual(generation_data["metadata"]["title"], "森の竜")
+        self.assertNotIn("dialogue_level", generation_data["metadata"])
+
+    def test_apply_metadata_value_routes_to_matching_widget(self):
+        panel = self.make_panel()
+
+        panel.apply_metadata_value("keywords", "エルフ、森, ドラゴン")
+        panel.apply_metadata_value("plot", "森で迷子になる。")
+
+        self.assertEqual(panel.keywords_widget.get_tags(), ["エルフ", "ドラゴン", "森"])
+        self.assertEqual(panel.plot_edit.toPlainText(), "森で迷子になる。")
+
+    def test_thinking_prefill_available_disables_and_unchecks(self):
+        panel = self.make_panel()
+        panel.set_thinking_prefill_text("固定したい思考", enabled=True)
+
+        panel.set_thinking_prefill_available(False)
+
+        self.assertFalse(panel.assistant_thinking_prefill_checkbox.isChecked())
+        self.assertFalse(panel.assistant_thinking_prefill_checkbox.isEnabled())
+        self.assertFalse(panel.assistant_thinking_prefill_edit.isEnabled())
+
+    def test_details_changed_signal_is_emitted(self):
+        panel = self.make_panel()
+        emitted = []
+        panel.details_changed.connect(lambda: emitted.append(True))
+
+        panel.title_edit.setText("森の竜")
+
+        self.assertTrue(emitted)
+
 
 if __name__ == "__main__":
     unittest.main()
