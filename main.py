@@ -1,7 +1,6 @@
 import sys
 import asyncio
 import qasync # Import qasync
-import re # Import regex module
 from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar,
                                QSplitter, QWidget, QVBoxLayout, QHBoxLayout,
                                QTabWidget, QScrollArea, QLineEdit, QPushButton, QMessageBox,
@@ -30,6 +29,7 @@ from src.ui.menu_handler import MenuHandler
 from src.ui.syntax_highlighter import DynamicPromptSyntaxHighlighter
 # Import IdeaProcessor and constants
 from src.core.idea_processor import IdeaProcessor, IDEA_ITEM_ORDER, IDEA_ITEM_ORDER_JA, METADATA_MAP
+from src.core.metadata_transfer import extract_metadata_value, normalize_metadata_value
 from src.core.context_utils import count_tokens, get_available_context, get_true_max_context_length # Import for token counting
 from src.core.thinking import (
     ThinkingRequestPolicy,
@@ -2387,64 +2387,30 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("出力エリアで転記したいテキストを選択してください。", 3000)
             return
 
-        japanese_name_map = {
-            "title": "タイトル", "keywords": "キーワード", "genres": "ジャンル",
-            "synopsis": "あらすじ", "setting": "設定", "plot": "プロット",
-        }
-        target_name = japanese_name_map.get(metadata_key)
+        target_name = METADATA_MAP.get(metadata_key)
         if not target_name:
             print(f"Error: Unknown metadata key '{metadata_key}' for transfer.")
             return
 
-        # Find the target section header anywhere in the selection and capture everything after it
-        pattern = re.compile(rf"# {re.escape(target_name)}:\s*(.*)", re.MULTILINE | re.DOTALL)
-        match = pattern.search(selected_text)
-
-        if not match:
+        extracted_value = extract_metadata_value(selected_text, metadata_key, METADATA_MAP)
+        if extracted_value is None:
             self.status_bar.showMessage(f"選択範囲から「{target_name}」セクションが見つかりませんでした。", 3000)
             return
 
-        # Extract content after the header and process line by line
-        content_after_header = match.group(1).strip()
-        lines = content_after_header.splitlines()
-        extracted_lines = []
-        for line in lines:
-            # Check if the line starts with another section header
-            is_next_header = False
-            # Iterate through all possible Japanese names in the map
-            for key, jp_name in japanese_name_map.items():
-                # Make sure we don't stop at the *current* header if it appears again,
-                # only stop if it's a *different* header.
-                if key != metadata_key and line.strip().startswith(f"# {jp_name}:"):
-                    is_next_header = True
-                    break # Found a different header, stop checking for this line
-            
-            if is_next_header:
-                break # Stop extracting lines when the next header is found
-            extracted_lines.append(line) # Append the line if it's not a subsequent header
-
-        extracted_value = "\n".join(extracted_lines).strip() # Join the extracted lines
-
-        # Handle potential empty extraction if the target header was last or immediately followed
-        # (extracted_value might be "" here, which is generally okay, but check specific cases)
-
         try:
+            normalized_value = normalize_metadata_value(metadata_key, extracted_value)
             if metadata_key == "title":
-                # Title should be single line, take the first extracted line
-                extracted_value = extracted_value.splitlines()[0] if extracted_value else ""
-                self.title_edit.setText(extracted_value)
+                self.title_edit.setText(normalized_value)
             elif metadata_key == "keywords":
-                tags = [line.strip().lstrip('-').strip() for line in extracted_value.splitlines() if line.strip()]
-                self.keywords_widget.set_tags(tags)
+                self.keywords_widget.set_tags(normalized_value)
             elif metadata_key == "genres":
-                tags = [line.strip().lstrip('-').strip() for line in extracted_value.splitlines() if line.strip()]
-                self.genre_widget.set_tags(tags)
+                self.genre_widget.set_tags(normalized_value)
             elif metadata_key == "synopsis":
-                self.synopsis_edit.setPlainText(extracted_value)
+                self.synopsis_edit.setPlainText(normalized_value)
             elif metadata_key == "setting":
-                self.setting_edit.setPlainText(extracted_value)
+                self.setting_edit.setPlainText(normalized_value)
             elif metadata_key == "plot":
-                self.plot_edit.setPlainText(extracted_value)
+                self.plot_edit.setPlainText(normalized_value)
             else:
                 print(f"Error: No widget defined for key '{metadata_key}'.")
                 return
