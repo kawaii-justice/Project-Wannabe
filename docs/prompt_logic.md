@@ -36,7 +36,7 @@ Project Wannabe には、AI への送り方が2種類あります。
 | UI上の名称 | 内部値 | 送信先 | 主な用途 |
 | :--- | :--- | :--- | :--- |
 | 旧wanabiシリーズ | `mistral_legacy` | `/api/extra/generate/stream` | 旧来の wanabi 系モデル向け |
-| 汎用 | `chat_completions_generic` | `/lcpp/v1/chat/completions` | モデル側のチャットテンプレートを使う汎用モード |
+| 汎用 | `chat_completions_generic` | `/lcpp/v1/chat/completions` | KoboldCpp 側の Jinja chat template を使う汎用モード |
 
 初回起動時のダイアログ、または `設定` > `生成パラメータ設定...` > `チャットテンプレモード` で選択します。
 
@@ -47,7 +47,7 @@ Project Wannabe には、AI への送り方が2種類あります。
 {Input}[/INST]{Assistant Prefill}
 ```
 
-汎用モードでは、次のような Chat Completions messages を作ります。
+汎用モードでは、Project Wannabe は独自の `[INST]...[/INST]` 文字列を直接作らず、次のような Chat Completions messages を作ります。最終的なモデル入力への変換は KoboldCpp 側の Jinja chat template に任せます。
 
 ```json
 [
@@ -462,6 +462,8 @@ Project Wannabe は KoboldCpp API を使って、利用可能なコンテキス�
 
 思考モードは `src/core/thinking.py` で制御されます。
 
+現時点で UI から選べる思考用テンプレートは Gemma 4 系です。`Gemma 4（Wannabeモデル用）` は新しい思考対応 Wannabe モデル向け、`Gemma 4（一般用）` は通常の Gemma 4 系モデルを試す場合の選択肢です。
+
 有効になる条件:
 
 * チャットテンプレモードが `chat_completions_generic`
@@ -476,7 +478,7 @@ Project Wannabe は KoboldCpp API を使って、利用可能なコンテキス�
 * Thinking Template が `disabled`
 * assistant prefill と衝突し、設定上 prefill 思考を扱えない場合
 
-Gemma 4 系テンプレートでは、思考ON/OFFを制御するために system 側へ次のような制御文字列を入れます。
+Thinking Template が `Gemma 4（Wannabeモデル用）` の場合、思考ON/OFFを制御するために system 側へ次のような制御文字列を入れます。
 
 ```text
 <|think|>
@@ -487,6 +489,8 @@ Gemma 4 系テンプレートでは、思考ON/OFFを制御するために syste
 ```text
 <|no_think|>
 ```
+
+思考対応の Wannabe 系モデルでは、モデル内蔵の Jinja chat template がこの制御文字列を解釈する想定です。KoboldCpp 側では `Use Jinja` を有効にします。
 
 思考が出力された場合、生成候補カードの「思考」欄に分けて表示されます。
 
