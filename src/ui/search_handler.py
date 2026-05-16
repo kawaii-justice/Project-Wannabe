@@ -1,7 +1,7 @@
-from PySide6.QtWidgets import QPlainTextEdit, QLineEdit, QTextEdit, QMessageBox, QApplication
+from PySide6.QtWidgets import QMessageBox
 from PySide6.QtCore import QObject, QTimer
-from PySide6.QtGui import QKeySequence, QAction
-from typing import Optional, Union
+from PySide6.QtGui import QAction
+from typing import Optional
 
 from src.ui.search_dialog import SearchDialog, SearchManager
 
@@ -21,6 +21,7 @@ class SearchHandler(QObject):
         self.search_timer.timeout.connect(self._perform_search_async)
         
         self._pending_search_params = None
+        self._restore_autocomplete_on_close = False
         
         # 検索対象のマッピング
         self.target_widgets = {}
@@ -32,8 +33,6 @@ class SearchHandler(QObject):
             self.target_widgets["main_text"] = self.main_window.main_text_edit
         if hasattr(self.main_window, 'memo_edit'):
             self.target_widgets["memo"] = self.main_window.memo_edit
-        if hasattr(self.main_window, 'output_text_edit'):
-            self.target_widgets["output"] = self.main_window.output_text_edit
         if hasattr(self.main_window, 'title_edit'):
             self.target_widgets["title"] = self.main_window.title_edit
         if hasattr(self.main_window, 'synopsis_edit'):
@@ -73,16 +72,8 @@ class SearchHandler(QObject):
         
     def show_search_dialog(self):
         """検索ダイアログを表示"""
-        # オートコンプリートが有効な場合は強制的に無効化（生成中の割り込み防止）
-        if (hasattr(self.main_window, 'autocomplete_checkbox') and
-            self.main_window.autocomplete_checkbox.isChecked()):
-            print("[SearchHandler] Disabling autocomplete for safe search mode")
-            self.main_window.autocomplete_checkbox.setChecked(False)
-            # set_enabled(False) はtoggledシグナル経由で呼ばれるため、ここではチェック解除のみ
-            
-        # ゴーストテキストが表示されている場合はクリア（オートコンプリートとの競合防止）
-        if hasattr(self.main_window, 'autocomplete_manager') and self.main_window.autocomplete_manager:
-            self.main_window.autocomplete_manager.clear_ghost_text()
+        if not self.is_search_active():
+            self._suspend_autocomplete_for_search()
             
         if not self.search_dialog:
             self.search_dialog = SearchDialog(self.main_window)
@@ -165,7 +156,7 @@ class SearchHandler(QObject):
         if success:
             self._update_search_status()
         else:
-            self._show_search_error("置換できませんでした")
+            self._show_search_error(self.search_manager.last_error or "置換できませんでした")
                  
     def _on_replace_all(self, search_text: str, replace_text: str,
                        case_sensitive: bool, use_regex: bool):
@@ -174,6 +165,8 @@ class SearchHandler(QObject):
                                                case_sensitive, use_regex)
         if count > 0:
             self._show_search_status(f"{count} 個置換しました")
+        elif self.search_manager.last_error:
+            self._show_search_error(self.search_manager.last_error)
         else:
             self._show_search_status("置換する項目が見つかりませんでした")
                 
@@ -200,7 +193,7 @@ class SearchHandler(QObject):
             if success:
                 self._update_search_status()
             else:
-                self._show_search_error("検索文字列が見つかりません")
+                self._show_search_error(self.search_manager.last_error or "検索文字列が見つかりません")
                 
         except Exception as e:
             self._show_search_error(f"検索エラー: {str(e)}")
@@ -228,7 +221,37 @@ class SearchHandler(QObject):
         if self.search_dialog:
             self.search_manager.clear_highlights()
             self.search_dialog.hide()
+        self._restore_autocomplete_after_search()
             
     def is_search_active(self) -> bool:
         """検索がアクティブかチェック"""
         return self.search_dialog is not None and self.search_dialog.isVisible()
+
+    def _suspend_autocomplete_for_search(self):
+        checkbox = getattr(self.main_window, "autocomplete_checkbox", None)
+        manager = getattr(self.main_window, "autocomplete_manager", None)
+        self._restore_autocomplete_on_close = bool(checkbox and checkbox.isChecked())
+
+        if manager:
+            manager.clear_ghost_text()
+
+        if checkbox and checkbox.isChecked():
+            checkbox.setChecked(False)
+
+    def _restore_autocomplete_after_search(self):
+        if not self._restore_autocomplete_on_close:
+            return
+
+        self._restore_autocomplete_on_close = False
+        checkbox = getattr(self.main_window, "autocomplete_checkbox", None)
+        manager = getattr(self.main_window, "autocomplete_manager", None)
+        if checkbox is None or not checkbox.isEnabled():
+            return
+        if getattr(self.main_window, "generation_status", "idle") != "idle":
+            return
+        if getattr(self.main_window, "current_mode", "generate") != "generate":
+            return
+
+        checkbox.setChecked(True)
+        if manager and getattr(manager, "is_enabled", False):
+            manager.debounce_timer.start(manager.debounce_ms)

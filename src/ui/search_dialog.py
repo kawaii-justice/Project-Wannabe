@@ -1,16 +1,15 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QCheckBox, QDialogButtonBox,
+                               QLineEdit, QPushButton, QCheckBox,
                                QTextEdit, QPlainTextEdit, QGroupBox, QComboBox, QMessageBox)
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QTextCursor, QTextCharFormat, QColor
 import re
-from typing import Optional, List, Dict, Union
+from typing import Optional, List
 
 # 検索対象の定義
 SEARCH_TARGETS = {
     "本文": "main_text",
     "メモ": "memo",
-    "出力": "output",
     "詳細情報": {
         "タイトル": "title",
         "あらすじ": "synopsis",
@@ -330,7 +329,9 @@ class SearchManager:
         self.current_line_edit: Optional[QLineEdit] = None
         self.search_results: List[tuple] = []  # (start, length) のリスト
         self.current_result_index: int = -1
-        self.last_search_pattern: str = ""
+        self.last_search_key: Optional[tuple[str, bool, bool]] = None
+        self.last_text_snapshot: Optional[str] = None
+        self.last_error: str = ""
         
         # ハイライトフォーマット
         self.highlight_format = QTextCharFormat()
@@ -347,9 +348,7 @@ class SearchManager:
 
         # ウィジェットが変更されたので、古いウィジェットのハイライトを消し、検索状態をリセット
         self.clear_highlights()
-        self.search_results.clear()
-        self.current_result_index = -1
-        self.last_search_pattern = ""
+        self._reset_search_state()
 
         if isinstance(text_widget, QPlainTextEdit):
             self.current_text_widget = text_widget
@@ -364,100 +363,54 @@ class SearchManager:
     def clear_highlights(self):
         """ハイライトをクリア"""
         if self.current_text_widget:
-            cursor = self.current_text_widget.textCursor()
-            cursor.select(QTextCursor.Document)
-            cursor.setCharFormat(QTextCharFormat())  # デフォルトフォーマットに戻す
-            cursor.clearSelection()
-        elif self.current_line_edit:
-            # QLineEditの場合はハイライトをクリア（選択を解除）
-            self.current_line_edit.setSelection(0, 0)
+            self.current_text_widget.setExtraSelections([])
         # ここでは検索結果リストはクリアしない
-        
+
     def find_text(self, pattern: str, case_sensitive: bool = False, 
                   use_regex: bool = False, forward: bool = True) -> bool:
         """テキストを検索"""
-        if not pattern:
+        self.last_error = ""
+        text = self._current_text()
+        if not pattern or text is None:
+            self._reset_search_state(clear_highlights=True)
             return False
-            
-        # ウィジェットタイプに応じてテキストを取得
-        if self.current_text_widget:
-            text = self.current_text_widget.toPlainText()
-            if not text:
-                return False
-        elif self.current_line_edit:
-            text = self.current_line_edit.text()
-            if not text:
-                return False
-        else:
+
+        regex = self._compile_pattern(pattern, case_sensitive, use_regex)
+        if regex is None:
+            self._reset_search_state(clear_highlights=True)
             return False
-            
-        # 新しい検索が始まったので、以前のハイライトと結果をクリア
-        if self.last_search_pattern != pattern:
+        if self._has_empty_match(regex, text):
+            self._reset_search_state(clear_highlights=True)
+            return False
+
+        search_key = (pattern, case_sensitive, use_regex)
+        if self._cache_is_stale(search_key, text):
             self.clear_highlights()
-            self.search_results = []
+            self.search_results = self._find_matches(regex, text)
             self.current_result_index = -1
+            self.last_search_key = search_key
+            self.last_text_snapshot = text
 
-        try:
-            # 正規表現のコンパイル
-            if use_regex:
-                flags = 0 if case_sensitive else re.IGNORECASE
-                regex = re.compile(pattern, flags)
-            else:
-                # 通常の文字列検索
-                if case_sensitive:
-                    pattern = re.escape(pattern)
-                else:
-                    pattern = re.escape(pattern)
-                    text = text.lower()
-                    pattern = pattern.lower()
-                regex = re.compile(pattern)
-                
-            # すべてのマッチを検索
-            if not self.search_results:
-                for match in regex.finditer(text):
-                    self.search_results.append((match.start(), match.end() - match.start()))
-
-            if not self.search_results:
-                self.clear_highlights()
-                return False
-                
-            # 現在のカーソル位置を取得
-            current_pos = 0
-            if self.current_text_widget:
-                cursor = self.current_text_widget.textCursor()
-                # 前を検索する場合は選択範囲の開始位置、次を検索する場合は終了位置を基準にする
-                current_pos = cursor.selectionStart() if not forward else cursor.position()
-            elif self.current_line_edit:
-                # QLineEditも同様
-                current_pos = self.current_line_edit.selectionStart() if not forward else (self.current_line_edit.selectionStart() + self.current_line_edit.selectionLength())
-            
-            # 次のマッチを探す
-            if forward:
-                self.current_result_index = self._find_next_match_index(current_pos)
-            else:
-                self.current_result_index = self._find_previous_match_index(current_pos)
-                
-            if self.current_result_index == -1:
-                # 見つからない場合は先頭/末尾から再検索
-                if forward:
-                    self.current_result_index = 0
-                else:
-                    self.current_result_index = len(self.search_results) - 1
-                    
-            # ハイライトとカーソル移動
-            self._highlight_and_move_to_current()
-            self.last_search_pattern = pattern
-            
-            return True
-            
-        except re.error as e:
-            # 正規表現エラー
+        if not self.search_results:
+            self.clear_highlights()
             return False
-            
+
+        current_pos = self._current_position(forward)
+        if forward:
+            self.current_result_index = self._find_next_match_index(current_pos)
+        else:
+            self.current_result_index = self._find_previous_match_index(current_pos)
+
+        if self.current_result_index == -1:
+            self.current_result_index = 0 if forward else len(self.search_results) - 1
+
+        self._highlight_and_move_to_current()
+        return True
+
     def _find_next_match_index(self, current_pos: int) -> int:
         """次のマッチのインデックスを探す"""
         for i, (start, length) in enumerate(self.search_results):
-            if start > current_pos:
+            if start >= current_pos:
                 return i
         return -1
         
@@ -491,11 +444,6 @@ class SearchManager:
             cursor = self.current_text_widget.textCursor()
             cursor.setPosition(start)
             cursor.setPosition(start + length, QTextCursor.KeepAnchor)
-            
-            # 現在のマッチを特別にハイライト
-            cursor.setCharFormat(self.current_highlight_format)
-            
-            # ビューにスクロール
             self.current_text_widget.setTextCursor(cursor)
             self.current_text_widget.ensureCursorVisible()
         elif self.current_line_edit:
@@ -509,127 +457,197 @@ class SearchManager:
         # QPlainTextEditの場合のみハイライト（QLineEditは複数ハイライト非対応）
         if self.current_text_widget:
             # すべてのマッチをハイライト（現在のマッチは後で上書き）
+            selections = []
             for i, (start, length) in enumerate(self.search_results):
-                if i != self.current_result_index:  # 現在のマッチは後で処理
-                    cursor = self.current_text_widget.textCursor()
-                    cursor.setPosition(start)
-                    cursor.setPosition(start + length, QTextCursor.KeepAnchor)
-                    cursor.setCharFormat(self.highlight_format)
-                
+                cursor = self.current_text_widget.textCursor()
+                cursor.setPosition(start)
+                cursor.setPosition(start + length, QTextCursor.KeepAnchor)
+                selection = QTextEdit.ExtraSelection()
+                selection.cursor = cursor
+                selection.format = (
+                    self.current_highlight_format
+                    if i == self.current_result_index
+                    else self.highlight_format
+                )
+                selections.append(selection)
+            self.current_text_widget.setExtraSelections(selections)
+
     def find_next(self, pattern: str, case_sensitive: bool = False, 
                   use_regex: bool = False) -> bool:
         """次を検索"""
-        if pattern != self.last_search_pattern or not self.search_results:
-            # 新しいパターンで検索
+        text = self._current_text()
+        search_key = (pattern, case_sensitive, use_regex)
+        if text is None or self._cache_is_stale(search_key, text):
             return self.find_text(pattern, case_sensitive, use_regex, forward=True)
-        else:
-            # 既存の結果から次へ
-            if not self.search_results:
-                return False
-                
-            self.current_result_index = (self.current_result_index + 1) % len(self.search_results)
-            self._highlight_and_move_to_current()
-            return True
+
+        if not self.search_results:
+            return False
+
+        self.current_result_index = (self.current_result_index + 1) % len(self.search_results)
+        self._highlight_and_move_to_current()
+        return True
             
     def find_previous(self, pattern: str, case_sensitive: bool = False,
                        use_regex: bool = False) -> bool:
         """前を検索"""
-        if pattern != self.last_search_pattern or not self.search_results:
-            # 新しいパターンで検索
+        text = self._current_text()
+        search_key = (pattern, case_sensitive, use_regex)
+        if text is None or self._cache_is_stale(search_key, text):
             return self.find_text(pattern, case_sensitive, use_regex, forward=False)
-        else:
-            # 既存の結果から前へ
-            if not self.search_results:
-                return False
-                
-            self.current_result_index = (self.current_result_index - 1) % len(self.search_results)
-            self._highlight_and_move_to_current()
-            return True
+
+        if not self.search_results:
+            return False
+
+        self.current_result_index = (self.current_result_index - 1) % len(self.search_results)
+        self._highlight_and_move_to_current()
+        return True
             
     def replace_current(self, search_pattern: str, replace_text: str,
                        case_sensitive: bool = False, use_regex: bool = False) -> bool:
         """現在のマッチを置換"""
-        if self.current_result_index == -1:
+        self.last_error = ""
+        if self.current_result_index == -1 and not self.find_next(search_pattern, case_sensitive, use_regex):
             return False
-            
+
+        text = self._current_text()
+        regex = self._compile_pattern(search_pattern, case_sensitive, use_regex)
+        if text is None or regex is None:
+            return False
+
         try:
             start, length = self.search_results[self.current_result_index]
-            
+            match = regex.match(text, start)
+            if match is None or match.end() != start + length:
+                if not self.find_next(search_pattern, case_sensitive, use_regex):
+                    return False
+                start, length = self.search_results[self.current_result_index]
+                text = self._current_text() or ""
+                match = regex.match(text, start)
+                if match is None or match.end() != start + length:
+                    return False
+
+            replacement = match.expand(replace_text) if use_regex else replace_text
+
             if self.current_text_widget:
                 cursor = self.current_text_widget.textCursor()
                 cursor.setPosition(start)
                 cursor.setPosition(start + length, QTextCursor.KeepAnchor)
-                
-                # 置換実行
-                cursor.insertText(replace_text)
-                
-                # 検索結果を更新
+                cursor.insertText(replacement)
+                self._reset_search_state(clear_highlights=True)
                 self.find_text(search_pattern, case_sensitive, use_regex, forward=True)
                 return True
             elif self.current_line_edit:
-                # QLineEditの置換
-                text = self.current_line_edit.text()
-                new_text = text[:start] + replace_text + text[start + length:]
+                new_text = text[:start] + replacement + text[start + length:]
                 self.current_line_edit.setText(new_text)
-                
-                # 検索結果を更新
+                self._reset_search_state(clear_highlights=True)
                 self.find_text(search_pattern, case_sensitive, use_regex, forward=True)
                 return True
-            
-        except Exception:
+
+        except (IndexError, re.error):
             return False
         return False
             
     def replace_all(self, search_pattern: str, replace_text: str,
                    case_sensitive: bool = False, use_regex: bool = False) -> int:
         """すべて置換"""
-        try:
-            if self.current_text_widget:
-                text = self.current_text_widget.toPlainText()
-                
-                if use_regex:
-                    flags = 0 if case_sensitive else re.IGNORECASE
-                    new_text, count = re.subn(search_pattern, replace_text, text, flags=flags)
-                else:
-                    if case_sensitive:
-                        new_text = text.replace(search_pattern, replace_text)
-                        count = text.count(search_pattern)
-                    else:
-                        # 大文字小文字無視の置換
-                        pattern = re.compile(re.escape(search_pattern), re.IGNORECASE)
-                        new_text, count = pattern.subn(replace_text, text)
-                         
-                if count > 0:
-                    self.current_text_widget.setPlainText(new_text)
-                    self.clear_highlights()
-                    
-                return count
-            elif self.current_line_edit:
-                # QLineEditの置換
-                text = self.current_line_edit.text()
-                
-                if use_regex:
-                    flags = 0 if case_sensitive else re.IGNORECASE
-                    new_text, count = re.subn(search_pattern, replace_text, text, flags=flags)
-                else:
-                    if case_sensitive:
-                        new_text = text.replace(search_pattern, replace_text)
-                        count = text.count(search_pattern)
-                    else:
-                        # 大文字小文字無視の置換
-                        pattern = re.compile(re.escape(search_pattern), re.IGNORECASE)
-                        new_text, count = pattern.subn(replace_text, text)
-                         
-                if count > 0:
-                    self.current_line_edit.setText(new_text)
-                    self.clear_highlights()
-                    
-                return count
-                
-        except Exception:
+        self.last_error = ""
+        text = self._current_text()
+        regex = self._compile_pattern(search_pattern, case_sensitive, use_regex)
+        if text is None or regex is None:
             return 0
+        if self._has_empty_match(regex, text):
+            return 0
+
+        try:
+            new_text, count = regex.subn(replace_text, text)
+        except re.error as exc:
+            self.last_error = f"置換エラー: {exc}"
+            return 0
+
+        if count <= 0:
+            return 0
+
+        if self.current_text_widget:
+            cursor = self.current_text_widget.textCursor()
+            cursor.beginEditBlock()
+            cursor.select(QTextCursor.Document)
+            cursor.insertText(new_text)
+            cursor.endEditBlock()
+            self.current_text_widget.setTextCursor(cursor)
+        elif self.current_line_edit:
+            self.current_line_edit.setText(new_text)
+
+        self._reset_search_state(clear_highlights=True)
+        return count
+
+    def _current_text(self) -> Optional[str]:
+        if self.current_text_widget:
+            return self.current_text_widget.toPlainText()
+        if self.current_line_edit:
+            return self.current_line_edit.text()
+        return None
+
+    def _current_position(self, forward: bool) -> int:
+        if self.current_text_widget:
+            cursor = self.current_text_widget.textCursor()
+            if cursor.hasSelection():
+                return cursor.selectionEnd() if forward else cursor.selectionStart()
+            return cursor.position()
+        if self.current_line_edit:
+            start = self.current_line_edit.selectionStart()
+            if start < 0:
+                start = self.current_line_edit.cursorPosition()
+            return start + self.current_line_edit.selectionLength() if forward else start
         return 0
-            
+
+    def _compile_pattern(self, pattern: str, case_sensitive: bool, use_regex: bool) -> Optional[re.Pattern]:
+        if not pattern:
+            return None
+        flags = 0 if case_sensitive else re.IGNORECASE
+        pattern_text = pattern if use_regex else re.escape(pattern)
+        try:
+            regex = re.compile(pattern_text, flags)
+        except re.error as exc:
+            self.last_error = f"正規表現エラー: {exc}"
+            return None
+
+        if regex.match("") is not None:
+            self.last_error = "空文字に一致する検索条件は使用できません"
+            return None
+        return regex
+
+    def _find_matches(self, regex: re.Pattern, text: str) -> list[tuple[int, int]]:
+        results = []
+        for match in regex.finditer(text):
+            length = match.end() - match.start()
+            if length <= 0:
+                self.last_error = "空文字に一致する検索条件は使用できません"
+                return []
+            results.append((match.start(), length))
+        return results
+
+    def _has_empty_match(self, regex: re.Pattern, text: str) -> bool:
+        for match in regex.finditer(text):
+            if match.end() == match.start():
+                self.last_error = "空文字に一致する検索条件は使用できません"
+                return True
+        return False
+
+    def _cache_is_stale(self, search_key: tuple[str, bool, bool], text: str) -> bool:
+        return (
+            self.last_search_key != search_key
+            or self.last_text_snapshot != text
+            or not self.search_results
+        )
+
+    def _reset_search_state(self, *, clear_highlights: bool = False):
+        if clear_highlights:
+            self.clear_highlights()
+        self.search_results.clear()
+        self.current_result_index = -1
+        self.last_search_key = None
+        self.last_text_snapshot = None
+
     def get_search_info(self) -> tuple:
         """検索情報を取得（進捗表示用）"""
         if not self.search_results:
