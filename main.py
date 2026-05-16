@@ -3,16 +3,15 @@ import asyncio
 import qasync # Import qasync
 from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar,
                                QSplitter, QWidget, QVBoxLayout, QHBoxLayout,
-                               QTabWidget, QScrollArea, QLineEdit, QPushButton, QMessageBox,
-                               QPlainTextEdit, QTextBrowser, QToolBar, QDialog, QLabel, QComboBox,
+                               QTabWidget, QScrollArea, QPushButton, QMessageBox,
+                               QPlainTextEdit, QTextBrowser, QToolBar, QDialog, QLabel,
                                QCheckBox, QSizePolicy)
 from PySide6.QtCore import Qt, Slot, QTimer, QEvent # Add QEvent
 from PySide6.QtGui import QTextCursor, QAction, QActionGroup
 from typing import Dict, Optional, List # Add Optional and List here
 
-# Correctly import custom widgets and other modules
-from src.ui.widgets import CollapsibleSection, TagWidget
 from src.ui.authors_note_panel import AuthorsNotePanel
+from src.ui.details_panel import DetailsPanel
 from src.ui.output_blocks import OutputBlockManager
 from src.ui.dialogs import KoboldConfigDialog, GenerationParamsDialog, ChatTemplateModeStartupDialog
 from src.core.kobold_client import KoboldClient, KoboldClientError, ChatStreamEvent
@@ -28,7 +27,7 @@ from src.core.settings import load_settings, DEFAULT_SETTINGS
 from src.ui.menu_handler import MenuHandler
 from src.ui.syntax_highlighter import DynamicPromptSyntaxHighlighter
 # Import IdeaProcessor and constants
-from src.core.idea_processor import IdeaProcessor, IDEA_ITEM_ORDER, IDEA_ITEM_ORDER_JA, METADATA_MAP
+from src.core.idea_processor import IdeaProcessor, IDEA_ITEM_ORDER, METADATA_MAP
 from src.core.metadata_transfer import extract_metadata_value, normalize_metadata_value
 from src.core.context_utils import count_tokens, get_available_context, get_true_max_context_length # Import for token counting
 from src.core.thinking import (
@@ -1215,178 +1214,35 @@ class MainWindow(QMainWindow):
             self.authors_note_panel.apply_style()
 
     def _create_details_tab(self):
-        self.details_tab_widget = QWidget()
-        details_main_layout = QVBoxLayout(self.details_tab_widget)
-        details_main_layout.setContentsMargins(0, 0, 0, 0)
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("QScrollArea { border: none; }")
-        details_main_layout.addWidget(scroll_area)
-        scroll_content_widget = QWidget()
-        scroll_area.setWidget(scroll_content_widget)
-        details_layout = QVBoxLayout(scroll_content_widget)
-        details_layout.setSpacing(10) # Increase spacing slightly
+        self.details_panel = DetailsPanel()
+        self.details_tab_widget = self.details_panel
+        self.details_panel.transfer_requested.connect(self._transfer_idea_to_details)
+        self.details_panel.idea_item_changed.connect(self._update_idea_fast_mode_state)
+        self.details_panel.thinking_prefill_transfer_requested.connect(self._transfer_output_to_thinking_prefill)
 
-        # --- IDEA Task Controls (Initially Hidden) ---
-        self.idea_controls_widget = QWidget()
-        idea_controls_layout = QVBoxLayout(self.idea_controls_widget)
-        idea_controls_layout.setContentsMargins(5, 5, 5, 5)
-        idea_controls_layout.setSpacing(5)
+        for attribute_name in (
+            "idea_controls_widget",
+            "idea_item_combo",
+            "idea_fast_mode_check",
+            "rating_combo_details",
+            "title_edit",
+            "title_transfer_button",
+            "keywords_widget",
+            "genre_widget",
+            "synopsis_edit",
+            "synopsis_transfer_button",
+            "setting_edit",
+            "setting_transfer_button",
+            "plot_edit",
+            "plot_transfer_button",
+            "dialogue_level_combo",
+            "assistant_thinking_prefill_checkbox",
+            "assistant_thinking_prefill_transfer_button",
+            "assistant_thinking_prefill_edit",
+        ):
+            setattr(self, attribute_name, getattr(self.details_panel, attribute_name))
 
-        idea_item_layout = QHBoxLayout()
-        idea_item_label = QLabel("生成項目:")
-        self.idea_item_combo = QComboBox()
-        self.idea_item_combo.addItem("全部", "all") # Add "all" option with internal key
-        for i, item_ja in enumerate(IDEA_ITEM_ORDER_JA):
-            item_key = IDEA_ITEM_ORDER[i]
-            self.idea_item_combo.addItem(item_ja, item_key) # Store internal key as data
-        idea_item_layout.addWidget(idea_item_label)
-        idea_item_layout.addWidget(self.idea_item_combo)
-        idea_controls_layout.addLayout(idea_item_layout)
-
-        self.idea_fast_mode_check = QCheckBox("高速な手法（実験的）")
-        idea_controls_layout.addWidget(self.idea_fast_mode_check)
-
-        # Add a separator or some visual distinction if desired
-        # separator = QFrame()
-        # separator.setFrameShape(QFrame.HLine)
-        # separator.setFrameShadow(QFrame.Sunken)
-        # idea_controls_layout.addWidget(separator)
-
-        details_layout.addWidget(self.idea_controls_widget)
-        self.idea_controls_widget.hide() # Hide initially
-        # Connect signal after creation
-        self.idea_item_combo.currentIndexChanged.connect(self._update_idea_fast_mode_state)
-        # --- End IDEA Task Controls ---
-
-
-        # --- Rating Selection ---
-        # Make rating section collapsible as well
-        rating_section = CollapsibleSection("レーティング (生成時)", parent=scroll_content_widget)
-        rating_layout = QHBoxLayout()
-        rating_label = QLabel("レーティング:")
-        self.rating_combo_details = QComboBox()
-        self.rating_combo_details.addItem("General (全年齢)", "general")
-        self.rating_combo_details.addItem("R-18", "r18")
-        rating_layout.addWidget(rating_label)
-        rating_layout.addWidget(self.rating_combo_details)
-        rating_layout.addStretch()
-        rating_section.content_layout.addLayout(rating_layout)
-        details_layout.addWidget(rating_section)
-        # Load initial rating from settings (ensure this happens after combo box creation)
-        initial_settings = load_settings()
-        initial_rating = initial_settings.get("default_rating", DEFAULT_SETTINGS["default_rating"])
-        initial_rating_index = self.rating_combo_details.findData(initial_rating)
-        if initial_rating_index != -1:
-            self.rating_combo_details.setCurrentIndex(initial_rating_index)
-        # --- End Rating Selection ---
-
-        # Title
-        title_section = CollapsibleSection("タイトル")
-        title_layout = QHBoxLayout()
-        self.title_edit = QLineEdit()
-        self.title_transfer_button = QPushButton("← 転記")
-        self.title_transfer_button.setFocusPolicy(Qt.NoFocus)
-        self.title_transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("title"))
-        title_layout.addWidget(self.title_edit)
-        title_layout.addWidget(self.title_transfer_button)
-        title_section.content_layout.addLayout(title_layout)
-        details_layout.addWidget(title_section)
-
-        # Keywords
-        keywords_section = CollapsibleSection("キーワード")
-        self.keywords_widget = TagWidget()
-        self.keywords_widget.transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("keywords"))
-        self.keywords_widget.transfer_button.setFocusPolicy(Qt.NoFocus)
-        keywords_section.addWidget(self.keywords_widget)
-        details_layout.addWidget(keywords_section)
-
-        # Genre
-        genre_section = CollapsibleSection("ジャンル")
-        self.genre_widget = TagWidget()
-        self.genre_widget.transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("genres"))
-        self.genre_widget.transfer_button.setFocusPolicy(Qt.NoFocus)
-        genre_section.addWidget(self.genre_widget)
-        details_layout.addWidget(genre_section)
-
-        # Synopsis
-        synopsis_section = CollapsibleSection("あらすじ")
-        synopsis_layout = QHBoxLayout()
-        self.synopsis_edit = QPlainTextEdit()
-        self.synopsis_edit.setPlaceholderText("小説のあらすじを入力...")
-        self.synopsis_transfer_button = QPushButton("← 転記")
-        self.synopsis_transfer_button.setFocusPolicy(Qt.NoFocus)
-        self.synopsis_transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("synopsis"))
-        synopsis_layout.addWidget(self.synopsis_edit)
-        synopsis_layout.addWidget(self.synopsis_transfer_button, 0, Qt.AlignTop)
-        synopsis_section.content_layout.addLayout(synopsis_layout)
-        details_layout.addWidget(synopsis_section)
-
-        # Setting
-        setting_section = CollapsibleSection("設定")
-        setting_layout = QHBoxLayout()
-        self.setting_edit = QPlainTextEdit()
-        self.setting_edit.setPlaceholderText("世界観、キャラクター設定などを入力...")
-        self.setting_transfer_button = QPushButton("← 転記")
-        self.setting_transfer_button.setFocusPolicy(Qt.NoFocus)
-        self.setting_transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("setting"))
-        setting_layout.addWidget(self.setting_edit)
-        setting_layout.addWidget(self.setting_transfer_button, 0, Qt.AlignTop)
-        setting_section.content_layout.addLayout(setting_layout)
-        details_layout.addWidget(setting_section)
-
-        # Plot
-        plot_section = CollapsibleSection("プロット")
-        plot_layout = QHBoxLayout()
-        self.plot_edit = QPlainTextEdit()
-        self.plot_edit.setPlaceholderText("物語の展開、構成などを入力...")
-        self.plot_transfer_button = QPushButton("← 転記")
-        self.plot_transfer_button.setFocusPolicy(Qt.NoFocus)
-        self.plot_transfer_button.clicked.connect(lambda: self._transfer_idea_to_details("plot"))
-        plot_layout.addWidget(self.plot_edit)
-        plot_layout.addWidget(self.plot_transfer_button, 0, Qt.AlignTop)
-        plot_section.content_layout.addLayout(plot_layout)
-        details_layout.addWidget(plot_section)
-
-        # Dialogue Level
-        dialogue_section = CollapsibleSection("セリフ量 (生成時)") # Clarify title
-        dialogue_layout = QHBoxLayout()
-        dialogue_label = QLabel("セリフ量:")
-        self.dialogue_level_combo = QComboBox()
-        self.dialogue_level_combo.addItems([
-            "指定なし", "少ない", "やや少ない", "普通", "やや多い", "多い"
-        ])
-        dialogue_layout.addWidget(dialogue_label)
-        dialogue_layout.addWidget(self.dialogue_level_combo)
-        dialogue_layout.addStretch() # Add stretch to push combo box to the left
-        dialogue_section.content_layout.addLayout(dialogue_layout)
-        details_layout.addWidget(dialogue_section)
-
-        # Assistant thinking prefill
-        assistant_thinking_section = CollapsibleSection("思考prefill (生成時)")
-        assistant_thinking_controls = QHBoxLayout()
-        self.assistant_thinking_prefill_checkbox = QCheckBox("思考を固定（思考有効時のみ）")
-        self.assistant_thinking_prefill_checkbox.setToolTip(
-            "思考モードが有効な時だけ、ここに入力した思考をassistant prefillとして固定します。"
-        )
-        self.assistant_thinking_prefill_transfer_button = QPushButton("← 選択思考を転記")
-        self.assistant_thinking_prefill_transfer_button.setFocusPolicy(Qt.NoFocus)
-        self.assistant_thinking_prefill_transfer_button.clicked.connect(self._transfer_output_to_thinking_prefill)
-        assistant_thinking_controls.addWidget(self.assistant_thinking_prefill_checkbox)
-        assistant_thinking_controls.addWidget(self.assistant_thinking_prefill_transfer_button)
-        assistant_thinking_controls.addStretch()
-
-        self.assistant_thinking_prefill_edit = QPlainTextEdit()
-        self.assistant_thinking_prefill_edit.setPlaceholderText(
-            "出力欄の思考など、あらかじめ流し込みたい思考を入力..."
-        )
-        self.assistant_thinking_prefill_edit.setMinimumHeight(90)
-        assistant_thinking_section.content_layout.addLayout(assistant_thinking_controls)
-        assistant_thinking_section.addWidget(self.assistant_thinking_prefill_edit)
-        details_layout.addWidget(assistant_thinking_section)
         self._update_assistant_thinking_prefill_state()
-
-        details_layout.addStretch()
 
     def _create_memo_tab(self):
         self.memo_tab_widget = QWidget()
