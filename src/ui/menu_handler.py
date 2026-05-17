@@ -661,9 +661,14 @@ class MenuHandler:
         # This should ideally be handled by main_window itself or another controller
         settings_menu = menu_bar.addMenu("設定(&S)")
         if hasattr(self.main_window, '_open_kobold_config_dialog') and hasattr(self.main_window, '_open_gen_params_dialog'):
+            kobold_launch_action = settings_menu.addAction("KoboldCpp 起動...")
             kobold_config_action = settings_menu.addAction("KoboldCpp 設定...")
             gen_params_action = settings_menu.addAction("生成パラメータ設定...")
             autocomplete_settings_action = settings_menu.addAction("設定: リアルタイム提案（ベータ）...")
+            if hasattr(self.main_window, '_open_kobold_launch_dialog'):
+                kobold_launch_action.triggered.connect(self.main_window._open_kobold_launch_dialog)
+            else:
+                kobold_launch_action.setEnabled(False)
             kobold_config_action.triggered.connect(self.main_window._open_kobold_config_dialog)
             gen_params_action.triggered.connect(self.main_window._open_gen_params_dialog)
             autocomplete_settings_action.triggered.connect(self._open_autocomplete_settings_dialog)

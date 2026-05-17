@@ -151,7 +151,20 @@ python main.py
 
 この設定はあとから `設定` > `生成パラメータ設定...` > `チャットテンプレモード` で変更できます。
 
-### 5.2 KoboldCpp のポートを確認する
+### 5.2 KoboldCpp を起動する
+
+Project Wannabe から KoboldCpp を起動したい場合は、`設定` > `KoboldCpp 起動...` を開きます。
+
+1. `KoboldCpp exe` に `koboldcpp.exe` を指定します。
+2. `.kcpps 設定ファイル` に、使いたい KoboldCpp 設定ファイルを指定します。未指定でも使えます。
+3. そのまま起動する場合は `起動` を押します。
+4. KoboldCpp 側で設定を確認・変更してから起動する場合は `設定を変えて起動` を押します。
+
+`.kcpps` が未指定の場合、`起動` でも KoboldCpp のGUIが開きます。
+
+`.kcpps` からポートを読み取れる場合は、Project Wannabe 側の KoboldCpp API ポートにも反映されます。`.kcpps` がない場合、または `.kcpps` にポート情報がない場合は、次の `KoboldCpp 設定...` のポートを使います。
+
+### 5.3 KoboldCpp のポートを確認する
 
 1. Project Wannabe の `設定` > `KoboldCpp 設定...` を開きます。
 2. `KoboldCpp API Port` が KoboldCpp の表示と一致しているか確認します。

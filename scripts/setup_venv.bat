@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 set "AUTO_RUN=0"
 set "NO_PAUSE=0"
 

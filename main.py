@@ -1,5 +1,7 @@
 import sys
 import asyncio
+import ctypes
+from pathlib import Path
 import qasync # Import qasync
 from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar,
                                QSplitter, QWidget, QVBoxLayout, QHBoxLayout,
@@ -7,13 +9,18 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QStatusBar,
                                QPlainTextEdit, QTextBrowser, QToolBar, QDialog, QLabel,
                                QCheckBox, QSizePolicy)
 from PySide6.QtCore import Qt, Slot, QTimer, QEvent # Add QEvent
-from PySide6.QtGui import QTextCursor, QAction, QActionGroup
+from PySide6.QtGui import QTextCursor, QAction, QActionGroup, QIcon
 from typing import Dict, Optional, List # Add Optional and List here
 
 from src.ui.authors_note_panel import AuthorsNotePanel
 from src.ui.details_panel import DetailsPanel
 from src.ui.output_blocks import OutputBlockManager
-from src.ui.dialogs import KoboldConfigDialog, GenerationParamsDialog, ChatTemplateModeStartupDialog
+from src.ui.dialogs import (
+    KoboldConfigDialog,
+    KoboldLaunchDialog,
+    GenerationParamsDialog,
+    ChatTemplateModeStartupDialog,
+)
 from src.core.kobold_client import KoboldClient, KoboldClientError, ChatStreamEvent
 from src.core.prompt_builder import (
     build_prompt,
@@ -51,6 +58,23 @@ from src.core.autocomplete_manager import AutocompleteManager
 GEMMA4_THOUGHT_OPEN = "<|channel>thought\n"
 GEMMA4_THOUGHT_EMPTY = "<|channel>thought\n<channel|>"
 THINKING_OUTPUT_MISSING_MESSAGE = "思考を出力できませんでした。Koboldの設定などを見直してください。"
+APP_USER_MODEL_ID = "kawaii-justice.ProjectWannabe"
+APP_ICON_PATH = Path(__file__).resolve().parent / "img" / "app_icon.ico"
+
+
+def _set_windows_app_user_model_id():
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception as e:
+        print(f"Failed to set Windows AppUserModelID: {e}")
+
+
+def _load_app_icon() -> QIcon:
+    if APP_ICON_PATH.exists():
+        return QIcon(str(APP_ICON_PATH))
+    return QIcon()
 
 
 class MainWindow(QMainWindow):
@@ -1234,6 +1258,10 @@ class MainWindow(QMainWindow):
             self.autocomplete_manager.reload_settings()  # オートコンプリート設定も再読み込み
         else:
             self.status_bar.showMessage("KoboldCpp 設定の変更はキャンセルされました。", 3000)
+
+    def _open_kobold_launch_dialog(self):
+        dialog = KoboldLaunchDialog(self)
+        dialog.exec()
 
     def _open_gen_params_dialog(self):
         dialog = GenerationParamsDialog(self)
@@ -2463,11 +2491,17 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    _set_windows_app_user_model_id()
     app = QApplication(sys.argv)
+    app_icon = _load_app_icon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
 
     window = MainWindow()
+    if not app_icon.isNull():
+        window.setWindowIcon(app_icon)
     async def async_cleanup():
         await window._cleanup()
     app.aboutToQuit.connect(lambda: asyncio.ensure_future(async_cleanup()))

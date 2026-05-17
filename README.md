@@ -190,7 +190,17 @@ python main.py
 
 この設定はあとから `設定` > `生成パラメータ設定...` > `チャットテンプレモード` で変更できます。
 
-### 4. KoboldCpp のポートを確認する
+### 4. KoboldCpp を起動・確認する
+
+Project Wannabe から起動したい場合は、`設定` > `KoboldCpp 起動...` を開き、KoboldCpp の exe と必要に応じて `.kcpps` 設定ファイルを選びます。
+
+* `起動`: `.kcpps` がある場合はその設定で起動します。`.kcpps` がない場合は KoboldCpp のGUIを開きます。
+* `設定を変えて起動`: `.kcpps` を読み込んだ状態で KoboldCpp のGUIを開きます。
+* `コマンドをコピー`: 実行コマンドをクリップボードへコピーします。
+
+`.kcpps` からポートを読み取れる場合は、Project Wannabe 側の KoboldCpp API ポートにも反映します。起動後は API 接続確認を行い、接続できたかをダイアログ内に表示します。
+
+`.kcpps` がない場合、または `.kcpps` からポートを読み取れない場合は、`KoboldCpp 設定...` の API ポートを使って接続確認します。標準は `5001` です。
 
 `設定` > `KoboldCpp 設定...` を開き、KoboldCpp のポートと一致しているか確認します。標準では `5001` です。
 
@@ -218,7 +228,15 @@ python main.py
 
 ## ⚙️ 設定
 
-設定はメニューバーの `設定` と `表示` から変更できます。設定値はプロジェクトルートの `config.json` に保存されます。
+設定はメニューバーの `設定` と `表示` から変更できます。設定値はプロジェクトルートの `config.json` に保存されます。`config.json` がない場合は起動時に自動生成され、古い `config.json` は不足している項目が自動で補完されます。
+
+`config.json` は利用環境ごとのローカル設定ファイルです。Git 管理には含めません。
+
+### KoboldCpp 起動
+
+`設定` > `KoboldCpp 起動...`
+
+KoboldCpp の exe と `.kcpps` 設定ファイルを選んで起動します。`.kcpps` の内容は Project Wannabe 側では直接編集せず、`設定を変えて起動` で KoboldCpp のGUIを開いて変更します。
 
 ### KoboldCpp 設定
 

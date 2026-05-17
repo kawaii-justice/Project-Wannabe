@@ -1,10 +1,13 @@
 import json
 import os
+from copy import deepcopy
 from typing import Any, Dict, List
 
 CONFIG_FILE = "config.json"
 DEFAULT_SETTINGS = {
     "kobold_port": 5001,
+    "koboldcpp_exe_path": "",
+    "koboldcpp_config_path": "",
     # "max_length": 250, # Removed old setting
     "max_length_idea": 1000, # Default for idea mode
     "max_length_generate": 500, # Default for generate mode
@@ -12,7 +15,7 @@ DEFAULT_SETTINGS = {
     "max_length_idea_thinking_on": 2000,
     "max_length_generate_thinking_off": 500,
     "max_length_generate_thinking_on": 1500,
-    "temperature": 1.0,
+    "temperature": 0.5,
     "min_p": 0.1,
     "top_p": 0.95,
     "top_k": 40, # Add Top-K setting (0 means disabled in many Kobold setups)
@@ -79,48 +82,73 @@ def get_config_path() -> str:
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     return os.path.join(project_root, CONFIG_FILE)
 
+def _merge_with_defaults(defaults: Dict[str, Any], loaded: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge settings while preserving unknown keys and filling nested defaults."""
+    merged = deepcopy(defaults)
+    for key, value in loaded.items():
+        default_value = merged.get(key)
+        if isinstance(default_value, dict) and isinstance(value, dict):
+            merged[key] = _merge_with_defaults(default_value, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _apply_settings_migrations(settings: Dict[str, Any], loaded_settings: Dict[str, Any]) -> bool:
+    """Apply migrations for older config.json files. Returns True when modified."""
+    changed = False
+
+    if (
+        "max_length" in loaded_settings
+        and "max_length_idea" not in loaded_settings
+        and "max_length_generate" not in loaded_settings
+    ):
+        print("Migrating old 'max_length' setting...")
+        old_max_length = loaded_settings["max_length"]
+        settings["max_length_idea"] = old_max_length
+        settings["max_length_generate"] = old_max_length
+        changed = True
+
+    thinking_length_defaults = {
+        "max_length_idea_thinking_off": settings["max_length_idea"],
+        "max_length_idea_thinking_on": settings["max_length_idea"],
+        "max_length_generate_thinking_off": settings["max_length_generate"],
+        "max_length_generate_thinking_on": settings["max_length_generate"],
+    }
+    for key, fallback_value in thinking_length_defaults.items():
+        if key not in loaded_settings:
+            settings[key] = fallback_value
+            changed = True
+
+    return changed
+
+
 def load_settings() -> Dict[str, Any]:
     """Loads settings from the config file or returns defaults."""
     config_path = get_config_path()
-    settings = DEFAULT_SETTINGS.copy() # Start with defaults
+    loaded_settings: Dict[str, Any] = {}
+    should_save = False
+
     try:
         if os.path.exists(config_path):
             with open(config_path, 'r', encoding='utf-8') as f:
                 loaded_settings = json.load(f)
-                # *** FIX: Update defaults with loaded settings, preserving all keys from file ***
-                settings.update(loaded_settings) # Overwrite defaults with any values found in the file
+                if not isinstance(loaded_settings, dict):
+                    raise ValueError(f"{CONFIG_FILE} must contain a JSON object.")
+        else:
+            should_save = True
 
-                # --- Backward compatibility for max_length ---
-                if "max_length" in loaded_settings and "max_length_idea" not in loaded_settings and "max_length_generate" not in loaded_settings:
-                    print("Migrating old 'max_length' setting...")
-                    old_max_length = loaded_settings["max_length"]
-                    settings["max_length_idea"] = old_max_length
-                    settings["max_length_generate"] = old_max_length
-                    # Optionally remove the old key from the loaded settings before saving again later
-                    # We don't remove it here directly from 'settings' as save_settings merges with defaults
-                # --- End backward compatibility ---
-
-                if "max_length_idea_thinking_off" not in loaded_settings:
-                    settings["max_length_idea_thinking_off"] = settings["max_length_idea"]
-                if "max_length_idea_thinking_on" not in loaded_settings:
-                    settings["max_length_idea_thinking_on"] = settings["max_length_idea"]
-                if "max_length_generate_thinking_off" not in loaded_settings:
-                    settings["max_length_generate_thinking_off"] = settings["max_length_generate"]
-                if "max_length_generate_thinking_on" not in loaded_settings:
-                    settings["max_length_generate_thinking_on"] = settings["max_length_generate"]
-
-                # Optional: Add validation here if needed, e.g., check types for known keys
-                # for key, value in loaded_settings.items():
-                #     if key in DEFAULT_SETTINGS and not isinstance(value, type(DEFAULT_SETTINGS[key])):
-                #         print(f"Warning: Type mismatch for setting '{key}' in {CONFIG_FILE}. Using loaded value anyway.")
-                #         settings[key] = value # Keep loaded value despite type mismatch for flexibility
-                #     elif key not in DEFAULT_SETTINGS:
-                #         # Handle unknown keys if necessary (e.g., print warning, ignore, or keep)
-                #         settings[key] = value # Keep unknown keys like font_family, font_size
-
-    except (json.JSONDecodeError, IOError) as e:
+    except (json.JSONDecodeError, IOError, ValueError) as e:
         print(f"Error loading {CONFIG_FILE}: {e}. Using default settings.")
-        return DEFAULT_SETTINGS.copy() # Return fresh defaults on error
+        return deepcopy(DEFAULT_SETTINGS) # Return fresh defaults on error
+
+    settings = _merge_with_defaults(DEFAULT_SETTINGS, loaded_settings)
+    should_save = should_save or _apply_settings_migrations(settings, loaded_settings)
+    should_save = should_save or settings != loaded_settings
+
+    if should_save:
+        save_settings(settings)
+
     return settings
 
 def save_settings(settings: Dict[str, Any]):
@@ -128,8 +156,7 @@ def save_settings(settings: Dict[str, Any]):
     config_path = get_config_path()
     try:
         # Ensure all default keys are present before saving
-        settings_to_save = DEFAULT_SETTINGS.copy()
-        settings_to_save.update(settings)
+        settings_to_save = _merge_with_defaults(DEFAULT_SETTINGS, settings)
 
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(settings_to_save, f, indent=4, ensure_ascii=False)

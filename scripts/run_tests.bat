@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 set "NO_PAUSE=0"
 if /I "%~1"=="/nopause" set "NO_PAUSE=1"
 

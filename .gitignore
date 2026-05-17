@@ -131,3 +131,6 @@ dmypy.json
 .project
 .pydevproject
 .settings/
+
+# Project Wannabe local settings
+config.json

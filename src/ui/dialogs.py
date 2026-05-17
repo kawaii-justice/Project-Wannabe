@@ -1,8 +1,15 @@
+import json
+import os
+import urllib.error
+import urllib.request
+
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox,
                                QDoubleSpinBox, QTextEdit, QFormLayout, QComboBox,
                                QDialogButtonBox, QWidget, QGroupBox, QRadioButton,
-                               QSpacerItem, QSizePolicy, QPlainTextEdit, QCheckBox)
-from PySide6.QtCore import Slot
+                               QSpacerItem, QSizePolicy, QPlainTextEdit, QCheckBox,
+                               QLineEdit, QPushButton, QFileDialog, QMessageBox,
+                               QApplication)
+from PySide6.QtCore import Slot, QProcess, QTimer
 from src.core.settings import load_settings, save_settings, DEFAULT_SETTINGS
 from src.ui.widgets import CollapsibleSection
 
@@ -43,6 +50,342 @@ class KoboldConfigDialog(QDialog):
         """Creates and shows the dialog, returning True if accepted."""
         dialog = KoboldConfigDialog(parent)
         return dialog.exec() == QDialog.Accepted
+
+
+class KoboldLaunchDialog(QDialog):
+    """Dialog for starting KoboldCpp from a saved .kcpps profile."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("KoboldCpp 起動")
+        self.setMinimumWidth(680)
+
+        self.current_settings = load_settings()
+        self.api_check_timer = QTimer(self)
+        self.api_check_timer.setInterval(1000)
+        self.api_check_timer.timeout.connect(self._check_api_connection_once)
+        self.api_check_remaining = 0
+        self.api_check_port = int(self.current_settings.get("kobold_port", 5001))
+
+        layout = QVBoxLayout(self)
+
+        description = QLabel(
+            "KoboldCpp の実行ファイルと .kcpps 設定ファイルを選びます。"
+            ".kcpps 未指定時は KoboldCpp のGUIを開きます。"
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        form_layout = QFormLayout()
+
+        self.exe_edit = QLineEdit(
+            self.current_settings.get(
+                "koboldcpp_exe_path",
+                DEFAULT_SETTINGS.get("koboldcpp_exe_path", ""),
+            )
+        )
+        self.exe_edit.setPlaceholderText(r"例: F:\kobold\koboldcpp.exe")
+        exe_row = QHBoxLayout()
+        exe_row.addWidget(self.exe_edit)
+        browse_exe_button = QPushButton("参照...")
+        browse_exe_button.clicked.connect(self._browse_exe)
+        exe_row.addWidget(browse_exe_button)
+        form_layout.addRow("KoboldCpp exe:", exe_row)
+
+        self.config_edit = QLineEdit(
+            self.current_settings.get(
+                "koboldcpp_config_path",
+                DEFAULT_SETTINGS.get("koboldcpp_config_path", ""),
+            )
+        )
+        self.config_edit.setPlaceholderText(r"例: F:\kobold\3090_gemma_thinking.kcpps")
+        config_row = QHBoxLayout()
+        config_row.addWidget(self.config_edit)
+        browse_config_button = QPushButton("参照...")
+        browse_config_button.clicked.connect(self._browse_config)
+        config_row.addWidget(browse_config_button)
+        clear_config_button = QPushButton("クリア")
+        clear_config_button.clicked.connect(self.config_edit.clear)
+        config_row.addWidget(clear_config_button)
+        form_layout.addRow(".kcpps 設定ファイル:", config_row)
+
+        layout.addLayout(form_layout)
+
+        self.config_summary_label = QLabel("")
+        self.config_summary_label.setWordWrap(True)
+        layout.addWidget(self.config_summary_label)
+
+        self.command_preview = QPlainTextEdit()
+        self.command_preview.setReadOnly(True)
+        self.command_preview.setMaximumHeight(86)
+        layout.addWidget(QLabel("実行コマンド:"))
+        layout.addWidget(self.command_preview)
+
+        note = QLabel(
+            "「起動」は .kcpps をそのまま読み込んで起動します。"
+            "「設定を変えて起動」は KoboldCpp のGUIを開き、設定を確認・変更してから起動できます。"
+            " .kcpps の編集と保存は KoboldCpp 側で行います。"
+            " .kcpps 未指定、または .kcpps からポートを読めない場合、API接続確認には KoboldCpp 設定のポートを使います。"
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        button_layout = QHBoxLayout()
+        self.launch_button = QPushButton("起動")
+        self.configure_launch_button = QPushButton("設定を変えて起動")
+        self.copy_button = QPushButton("コマンドをコピー")
+        self.api_check_button = QPushButton("API接続確認")
+        close_button = QPushButton("閉じる")
+
+        self.launch_button.clicked.connect(lambda: self._start_kobold(show_gui=False))
+        self.configure_launch_button.clicked.connect(lambda: self._start_kobold(show_gui=True))
+        self.copy_button.clicked.connect(self._copy_command)
+        self.api_check_button.clicked.connect(self._check_api_connection_now)
+        close_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(self.launch_button)
+        button_layout.addWidget(self.configure_launch_button)
+        button_layout.addWidget(self.copy_button)
+        button_layout.addWidget(self.api_check_button)
+        button_layout.addStretch()
+        button_layout.addWidget(close_button)
+        layout.addLayout(button_layout)
+
+        self.exe_edit.textChanged.connect(self._update_command_preview)
+        self.config_edit.textChanged.connect(self._on_config_path_changed)
+        self._on_config_path_changed()
+        self._update_command_preview()
+
+    def _browse_exe(self):
+        start_dir = self._existing_parent_dir(self.exe_edit.text().strip())
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "KoboldCpp exe を選択",
+            start_dir,
+            "KoboldCpp executable (koboldcpp*.exe);;Executable Files (*.exe);;All Files (*)",
+        )
+        if filepath:
+            self.exe_edit.setText(filepath)
+
+    def _browse_config(self):
+        start_dir = self._existing_parent_dir(self.config_edit.text().strip())
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            ".kcpps 設定ファイルを選択",
+            start_dir,
+            "KoboldCpp Settings (*.kcpps);;All Files (*)",
+        )
+        if filepath:
+            self.config_edit.setText(filepath)
+
+    def _existing_parent_dir(self, path: str) -> str:
+        if path and os.path.isdir(path):
+            return path
+        if path:
+            parent = os.path.dirname(path)
+            if os.path.isdir(parent):
+                return parent
+        return ""
+
+    def _read_config_data(self) -> dict:
+        config_path = self.config_edit.text().strip()
+        if not config_path or not os.path.isfile(config_path):
+            return {}
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _read_config_port(self) -> int | None:
+        data = self._read_config_data()
+        for key in ("port_param", "port"):
+            value = data.get(key)
+            try:
+                port = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= port <= 65535:
+                return port
+        return None
+
+    def _get_api_port(self) -> int:
+        config_port = self._read_config_port()
+        if config_port is not None:
+            return config_port
+        return int(self.current_settings.get("kobold_port", DEFAULT_SETTINGS.get("kobold_port", 5001)))
+
+    def _save_paths(self):
+        self.current_settings["koboldcpp_exe_path"] = self.exe_edit.text().strip()
+        self.current_settings["koboldcpp_config_path"] = self.config_edit.text().strip()
+        self.current_settings["kobold_port"] = self._get_api_port()
+        save_settings(self.current_settings)
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "kobold_client"):
+            parent.kobold_client.reload_settings()
+        if parent is not None and hasattr(parent, "autocomplete_manager"):
+            parent.autocomplete_manager.reload_settings()
+
+    def _build_args(self, show_gui: bool) -> list[str]:
+        config_path = self.config_edit.text().strip()
+        if not config_path:
+            return []
+
+        args = ["--config", config_path]
+        if show_gui:
+            args.append("--showgui")
+        return args
+
+    def _build_command_text(self, show_gui: bool | None = None) -> str:
+        exe_path = self.exe_edit.text().strip() or r"C:\path\to\koboldcpp.exe"
+        if show_gui is None:
+            show_gui = False
+        parts = ["&", self._powershell_quote(exe_path)]
+        for arg in self._build_args(show_gui):
+            if arg.startswith("-"):
+                parts.append(arg)
+            else:
+                parts.append(self._powershell_quote(arg))
+        return " ".join(parts)
+
+    def _powershell_quote(self, text: str) -> str:
+        escaped = text.replace("`", "``").replace('"', '`"')
+        return f'"{escaped}"'
+
+    def _update_command_preview(self, *args):
+        launch_command = self._build_command_text(show_gui=False)
+        configure_command = self._build_command_text(show_gui=True)
+        if launch_command == configure_command:
+            preview = launch_command
+        else:
+            preview = (
+                f"起動:\n{launch_command}\n\n"
+                f"設定を変えて起動:\n{configure_command}"
+            )
+        self.command_preview.setPlainText(preview)
+        self._update_config_summary()
+
+    def _on_config_path_changed(self, *args):
+        self._update_command_preview()
+
+    def _update_config_summary(self):
+        data = self._read_config_data()
+        config_path = self.config_edit.text().strip()
+        port = self._read_config_port()
+        model = data.get("model_param") if data else None
+        api_port = self._get_api_port()
+        if config_path and not data:
+            self.config_summary_label.setText(
+                f".kcpps を読み取れません。API接続確認には KoboldCpp 設定のポート {api_port} を使います。"
+            )
+            return
+        if port is not None:
+            if model:
+                self.config_summary_label.setText(
+                    f".kcpps から API ポート {port} を検出しました。API接続確認にはポート {api_port} を使います。モデル: {model}"
+                )
+            else:
+                self.config_summary_label.setText(
+                    f".kcpps から API ポート {port} を検出しました。API接続確認にはポート {api_port} を使います。"
+                )
+        else:
+            self.config_summary_label.setText(
+                f".kcpps 未指定、またはポート未検出です。API接続確認には KoboldCpp 設定のポート {api_port} を使います。"
+            )
+
+    def _validate_paths(self) -> tuple[str, str] | None:
+        exe_path = self.exe_edit.text().strip()
+        config_path = self.config_edit.text().strip()
+
+        if not exe_path:
+            QMessageBox.warning(self, "KoboldCpp 起動", "KoboldCpp exe を指定してください。")
+            return None
+        if not os.path.isfile(exe_path):
+            QMessageBox.warning(self, "KoboldCpp 起動", f"KoboldCpp exe が見つかりません:\n{exe_path}")
+            return None
+        if config_path and not os.path.isfile(config_path):
+            QMessageBox.warning(self, "KoboldCpp 起動", f".kcpps 設定ファイルが見つかりません:\n{config_path}")
+            return None
+        return exe_path, config_path
+
+    def _start_kobold(self, show_gui: bool):
+        validated = self._validate_paths()
+        if validated is None:
+            return
+
+        exe_path, _config_path = validated
+        args = self._build_args(show_gui=show_gui)
+        working_dir = os.path.dirname(exe_path) or ""
+
+        self._save_paths()
+
+        result = QProcess.startDetached(exe_path, args, working_dir)
+        success = result[0] if isinstance(result, tuple) else bool(result)
+        if success:
+            port = self._get_api_port()
+            if show_gui or not self.config_edit.text().strip():
+                self.status_label.setText(
+                    f"KoboldCpp GUI を開きました。KoboldCpp 側で起動後、API 接続を確認します: http://127.0.0.1:{port}"
+                )
+            else:
+                self.status_label.setText(
+                    f"KoboldCpp を起動しました。API 接続を確認しています: http://127.0.0.1:{port}"
+                )
+            self._begin_api_check(port)
+        else:
+            QMessageBox.critical(
+                self,
+                "KoboldCpp 起動",
+                "KoboldCpp を起動できませんでした。exe の場所と権限を確認してください。",
+            )
+
+    def _copy_command(self):
+        self._save_paths()
+        QApplication.clipboard().setText(self.command_preview.toPlainText())
+        self.status_label.setText("実行コマンドをクリップボードへコピーしました。")
+
+    def _check_api_connection_now(self):
+        self._save_paths()
+        port = self._get_api_port()
+        self._begin_api_check(port, attempts=1)
+
+    def _begin_api_check(self, port: int, attempts: int = 180):
+        self.api_check_port = port
+        self.api_check_remaining = max(1, attempts)
+        if self.api_check_timer.isActive():
+            self.api_check_timer.stop()
+        self._check_api_connection_once()
+        if self.api_check_remaining > 0:
+            self.api_check_timer.start()
+
+    def _check_api_connection_once(self):
+        port = self.api_check_port
+        url = f"http://127.0.0.1:{port}/api/extra/true_max_context_length"
+        try:
+            with urllib.request.urlopen(url, timeout=0.8) as response:
+                body = response.read(200).decode("utf-8", errors="replace").strip()
+            self.api_check_timer.stop()
+            self.api_check_remaining = 0
+            suffix = f" true_max_context_length: {body}" if body else ""
+            self.status_label.setText(f"KoboldCpp API 接続を確認しました。{suffix}")
+            return
+        except (urllib.error.URLError, TimeoutError, OSError):
+            self.api_check_remaining -= 1
+
+        if self.api_check_remaining <= 0:
+            self.api_check_timer.stop()
+            self.status_label.setText(
+                f"KoboldCpp API をまだ確認できません。KoboldCpp が起動中なら、完了後に API接続確認 を押してください: {url}"
+            )
+        else:
+            self.status_label.setText(
+                f"KoboldCpp API を待っています。残り {self.api_check_remaining} 秒: {url}"
+            )
 
 
 class ChatTemplateModeStartupDialog(QDialog):
