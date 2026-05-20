@@ -419,8 +419,9 @@ class AutocompleteManager(QObject):
         # ゴーストテキストを削除
         cursor = QTextCursor(self.ghost_text_cursor)
         start_position = cursor.selectionStart()
-        if prefer_undo and self._can_undo_ghost_insertion():
-            # キーボード入力直前など「Undoトップがゴースト挿入」と保証できる場合のみUndoで消す
+        if self._can_undo_ghost_insertion():
+            # 「Undoトップがゴースト挿入」と保証できる場合はUndoで消す。
+            # 直接削除すると、その削除自体がUndo履歴に残ってゴーストが復活しうる。
             self.main_text_edit.undo()
             cursor = self.main_text_edit.textCursor()
             cursor.setPosition(start_position)
