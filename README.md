@@ -125,12 +125,12 @@ wanabi シリーズは、小説本文の生成、物語の続きの生成、タ�
 | 使うモデル | チャットテンプレモード | Thinking Template | KoboldCpp 側 |
 | :--- | :--- | :--- | :--- |
 | 新しい思考対応 Wannabe モデル | `汎用` | `Gemma 4（Wannabeモデル用）` | `Use Jinja` を有効 |
-| 一般の Gemma 4 系モデル | `汎用` | `Gemma 4（一般用）` | `Use Jinja` を有効 |
+| 一般の Gemma 4 系モデル | `汎用` | `Gemma 4（一般用）` | `Use Jinja` を有効。加えて `Chat Template Kwargs` に `{"enable_thinking":true}` を指定 |
 | 旧 wanabi シリーズ | `旧wanabiシリーズ` | 思考モード対象外 | 通常どおり |
 
 思考モードは、設定の **チャットテンプレモード** が `汎用` のときに使えます。リアルタイム提案では使用できません。
 
-新しい思考対応 Wannabe モデルでは、KoboldCpp の `Chat Template Kwargs` を通常は手で入れる必要はありません。一般の Gemma 4 系モデルは `Gemma 4（一般用）` で試せますが、主な対象は新しい思考対応 Wannabe モデルです。
+新しい思考対応 Wannabe モデルでは、KoboldCpp の `Chat Template Kwargs` を通常は手で入れる必要はありません。一般の Gemma 4 系モデルは `Gemma 4（一般用）` で試せますが、KoboldCpp 側で `{"enable_thinking":true}` を渡す必要があります。コマンドラインで起動する場合は、例として `--chat-template-kwargs '{"enable_thinking":true}'` または `--jinja-kwargs '{"enable_thinking":true}'` を指定します。
 
 ### 🔍 検索・置換
 
@@ -191,6 +191,8 @@ python main.py
 この設定はあとから `設定` > `生成パラメータ設定...` > `チャットテンプレモード` で変更できます。
 
 ### 4. KoboldCpp を起動・確認する
+
+この手順は、1で手動起動した KoboldCpp の代わりに Project Wannabe から起動したい場合、または起動済み KoboldCpp への API 接続を確認したい場合の補足です。すでに KoboldCpp を起動して接続できている場合は、ポート確認だけ行えば先へ進めます。
 
 Project Wannabe から起動したい場合は、`設定` > `KoboldCpp 起動...` を開き、KoboldCpp の exe と必要に応じて `.kcpps` 設定ファイルを選びます。
 
@@ -306,7 +308,7 @@ KoboldCpp API のポート番号を指定します。標準は `5001` です。
     * 思考モードでは、モデルが出した思考部分と本文出力を分けて扱い、生成候補カード内の「思考」欄に表示します。
     * 新しい思考対応 Wannabe モデルでは、Project Wannabe 側で **チャットテンプレモード: `汎用`**、Thinking Template: **`Gemma 4（Wannabeモデル用）`** を選びます。
     * KoboldCpp 側では **Use Jinja** を有効にしてください。新しい思考対応 Wannabe モデルでは、`Chat Template Kwargs` は通常そのままで使います。
-    * 一般の Gemma 4 系モデルを試す場合は、**チャットテンプレモード: `汎用`**、Thinking Template: **`Gemma 4（一般用）`** を選びます。
+    * 一般の Gemma 4 系モデルを試す場合は、**チャットテンプレモード: `汎用`**、Thinking Template: **`Gemma 4（一般用）`** を選びます。KoboldCpp 側では **Use Jinja** に加えて、`Chat Template Kwargs` に `{"enable_thinking":true}` を指定してください。
     * リアルタイム提案では思考モードは使用しません。短い補完候補ではなく、通常の小説生成・アイデア出しで使う機能です。
 * **チャットテンプレモードの追加:**
     * `旧wanabiシリーズ` と `汎用` を選べるようになりました。
@@ -320,6 +322,7 @@ KoboldCpp API のポート番号を指定します。標準は `5001` です。
     * 生成結果はカードとして管理し、本文へ挿入、メモへ送る、コピー、削除がしやすくなりました。
 * **ドキュメント更新:**
     * README、Quick Start Guide、Dynamic Prompts Guide、prompt_logic を現行仕様に合わせて更新しました。
+    * 一般の Gemma 4 系モデルで思考モードを使う場合に `{"enable_thinking":true}` が必要なことをREADMEへ追記しました。
 
 ### 2025-12-28 - 大規模アップデート🎉 新モデル・リアルタイム提案機能・検索機能の実装とコンテキスト管理の強化
 
