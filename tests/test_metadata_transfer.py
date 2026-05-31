@@ -20,6 +20,33 @@ class MetadataTransferTest(unittest.TestCase):
             "- エルフ\n- ドラゴン",
         )
 
+    def test_extracts_section_with_loose_markdown_heading(self):
+        text = (
+            "## タイトル\n"
+            "森の竜と迷子の少女\n\n"
+            "### キーワード：\n"
+            "- エルフ\n"
+            "- ドラゴン\n\n"
+            "#### あらすじ\n"
+            "森で迷子になった少女が竜と出会う。"
+        )
+
+        self.assertEqual(
+            extract_metadata_value(text, "keywords"),
+            "- エルフ\n- ドラゴン",
+        )
+
+    def test_extracts_inline_value_from_loose_markdown_heading(self):
+        self.assertEqual(
+            extract_metadata_value("## タイトル: 森の竜\n\n## キーワード\n竜", "title"),
+            "森の竜",
+        )
+
+    def test_does_not_treat_non_heading_hash_text_as_section(self):
+        text = "本文中の # タイトル: ではない行\n作品名"
+
+        self.assertIsNone(extract_metadata_value(text, "title"))
+
     def test_missing_section_returns_none(self):
         self.assertIsNone(extract_metadata_value("# タイトル:\n作品名", "plot"))
 

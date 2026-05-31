@@ -412,7 +412,8 @@ class ChatTemplateModeStartupDialog(QDialog):
             "kawaimasa/Wanabi-Novelist-12B-GGUF\n"
             "kawaimasa/wanabi_24b_v1_GGUF\n"
             "kawaimasa/wanabi_mini_12b_GGUF\n\n"
-            "それ以外のモデルは `汎用` を選択してください。"
+            "Wanabi-Gemma4-31B を使う場合は `汎用` を選択してください。\n"
+            "それ以外のモデルも、モデル側のチャットテンプレートを使う場合は `汎用` を選択してください。"
         )
         model_info.setWordWrap(True)
         layout.addWidget(model_info)

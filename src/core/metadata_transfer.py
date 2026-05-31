@@ -9,21 +9,29 @@ def extract_metadata_value(
     metadata_key: str,
     metadata_map: Mapping[str, str] = METADATA_MAP,
 ) -> str | None:
-    """Extract one '# JapaneseName:' section from generated IDEA text."""
+    """Extract one markdown metadata section from generated IDEA text."""
     target_name = metadata_map.get(metadata_key)
     if not target_name:
         raise KeyError(f"Unknown metadata key: {metadata_key}")
 
-    pattern = re.compile(rf"# {re.escape(target_name)}:\s*(.*)", re.MULTILINE | re.DOTALL)
-    match = pattern.search(selected_text)
-    if not match:
-        return None
-
     extracted_lines: list[str] = []
-    for line in match.group(1).strip().splitlines():
+    found_target = False
+    for line in selected_text.splitlines():
+        if not found_target:
+            inline_value = _match_metadata_header(line, target_name)
+            if inline_value is None:
+                continue
+            found_target = True
+            if inline_value:
+                extracted_lines.append(inline_value)
+            continue
+
         if _is_next_metadata_header(line, metadata_key, metadata_map):
             break
         extracted_lines.append(line)
+
+    if not found_target:
+        return None
     return "\n".join(extracted_lines).strip()
 
 
@@ -40,8 +48,15 @@ def parse_tag_lines(text: str) -> list[str]:
 
 
 def _is_next_metadata_header(line: str, metadata_key: str, metadata_map: Mapping[str, str]) -> bool:
-    stripped = line.strip()
     for key, japanese_name in metadata_map.items():
-        if key != metadata_key and stripped.startswith(f"# {japanese_name}:"):
+        if key != metadata_key and _match_metadata_header(line, japanese_name) is not None:
             return True
     return False
+
+
+def _match_metadata_header(line: str, japanese_name: str) -> str | None:
+    pattern = re.compile(rf"^\s*#{{1,6}}\s*{re.escape(japanese_name)}\s*(?:[:：]\s*(.*))?$")
+    match = pattern.match(line)
+    if not match:
+        return None
+    return (match.group(1) or "").strip()

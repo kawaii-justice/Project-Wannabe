@@ -120,17 +120,17 @@ wanabi シリーズは、小説本文の生成、物語の続きの生成、タ�
 
 ### 🧠 思考モード（対応モデルのみ）
 
-現時点で Project Wannabe の思考モードが対象にしているのは、Gemma 4 系の思考対応モデルです。生成結果に思考出力が含まれる場合は、本文とは分けて生成候補カード内の「思考」欄に表示します。今後リリース予定の思考対応 Wannabe モデルを扱いやすくするための準備を含む機能です。
+現時点で Project Wannabe の思考モードが対象にしているのは、Gemma 4 系の思考対応モデルです。生成結果に思考出力が含まれる場合は、本文とは分けて生成候補カード内の「思考」欄に表示します。新モデル **[Wanabi-Gemma4-31B](https://huggingface.co/kawaimasa/Wanabi-Gemma4-31B-GGUF)** に向けた機能です。
 
 | 使うモデル | チャットテンプレモード | Thinking Template | KoboldCpp 側 |
 | :--- | :--- | :--- | :--- |
-| 新しい思考対応 Wannabe モデル | `汎用` | `Gemma 4（Wannabeモデル用）` | `Use Jinja` を有効 |
+| Wanabi-Gemma4-31B | `汎用` | `Gemma 4（Wannabeモデル用）` | `Use Jinja` を有効 |
 | 一般の Gemma 4 系モデル | `汎用` | `Gemma 4（一般用）` | `Use Jinja` を有効。加えて `Chat Template Kwargs` に `{"enable_thinking":true}` を指定 |
 | 旧 wanabi シリーズ | `旧wanabiシリーズ` | 思考モード対象外 | 通常どおり |
 
 思考モードは、設定の **チャットテンプレモード** が `汎用` のときに使えます。リアルタイム提案では使用できません。
 
-新しい思考対応 Wannabe モデルでは、KoboldCpp の `Chat Template Kwargs` を通常は手で入れる必要はありません。一般の Gemma 4 系モデルは `Gemma 4（一般用）` で試せますが、KoboldCpp 側で `{"enable_thinking":true}` を渡す必要があります。コマンドラインで起動する場合は、例として `--chat-template-kwargs '{"enable_thinking":true}'` または `--jinja-kwargs '{"enable_thinking":true}'` を指定します。
+Wanabi-Gemma4-31B では、KoboldCpp の `Chat Template Kwargs` を通常は手で入れる必要はありません。一般の Gemma 4 系モデルは `Gemma 4（一般用）` で試せますが、KoboldCpp 側で `{"enable_thinking":true}` を渡す必要があります。コマンドラインで起動する場合は、例として `--chat-template-kwargs '{"enable_thinking":true}'` または `--jinja-kwargs '{"enable_thinking":true}'` を指定します。
 
 ### 🔍 検索・置換
 
@@ -184,9 +184,9 @@ python main.py
 | 選択肢 | 使う場面 |
 | :--- | :--- |
 | 旧wanabiシリーズ | `kawaimasa/Wanabi-Novelist-24B-GGUF`、`kawaimasa/Wanabi-Novelist-12B-GGUF`、`kawaimasa/wanabi_24b_v1_GGUF`、`kawaimasa/wanabi_mini_12b_GGUF` を使う場合 |
-| 汎用 | 新しい思考対応 Wannabe モデル、一般の Gemma 4 系モデル、またはモデル側のチャットテンプレートを使いたい場合 |
+| 汎用 | Wanabi-Gemma4-31B、一般の Gemma 4 系モデル、またはモデル側のチャットテンプレートを使いたい場合 |
 
-`汎用` は、KoboldCpp 側のチャットテンプレートを使うモデル向けのモードです。新しい思考対応 Wannabe モデルや Gemma 4 系の思考モードを使う場合はこちらを選びます。
+`汎用` は、KoboldCpp 側のチャットテンプレートを使うモデル向けのモードです。Wanabi-Gemma4-31B や Gemma 4 系の思考モードを使う場合はこちらを選びます。
 
 この設定はあとから `設定` > `生成パラメータ設定...` > `チャットテンプレモード` で変更できます。
 
@@ -300,20 +300,25 @@ KoboldCpp API のポート番号を指定します。標準は `5001` です。
 
 ## 更新履歴 (Changelog)
 
-### 2026年5月頃 - 大規模アップデート: 思考モデル対応準備とUI刷新
+### 2026年5月31日 - 大規模アップデート: 思考モデル対応とUI刷新
 
-* **思考モデル対応の準備:**
-    * この更新の中心として、今後リリース予定の思考対応 Wannabe モデルを扱うための思考モードを追加しました。
+* **[Wanabi-Gemma4-31B](https://huggingface.co/kawaimasa/Wanabi-Gemma4-31B-GGUF) リリース予定:**
+    * Gemma 4 系の思考対応モデルとしてリリース予定です。
+    * Project Wannabe 側では **チャットテンプレモード: `汎用`**、Thinking Template: **`Gemma 4（Wannabeモデル用）`** を選んでください。
+    * KoboldCpp 側では **Use Jinja** を有効にしてください。`Chat Template Kwargs` は通常そのままで使います。
+    * モデルURLはリリース前のプレースホルダーです。公開後に正式URLへ更新してください。
+* **思考モデル対応:**
+    * Wanabi-Gemma4-31B などの思考対応 Wannabe モデルを扱うための思考モードを追加しました。
     * 現時点で Project Wannabe が対象にしている思考モードは Gemma 4 系です。
     * 思考モードでは、モデルが出した思考部分と本文出力を分けて扱い、生成候補カード内の「思考」欄に表示します。
-    * 新しい思考対応 Wannabe モデルでは、Project Wannabe 側で **チャットテンプレモード: `汎用`**、Thinking Template: **`Gemma 4（Wannabeモデル用）`** を選びます。
-    * KoboldCpp 側では **Use Jinja** を有効にしてください。新しい思考対応 Wannabe モデルでは、`Chat Template Kwargs` は通常そのままで使います。
+    * Wanabi-Gemma4-31B では、Project Wannabe 側で **チャットテンプレモード: `汎用`**、Thinking Template: **`Gemma 4（Wannabeモデル用）`** を選びます。
+    * KoboldCpp 側では **Use Jinja** を有効にしてください。Wanabi-Gemma4-31B では、`Chat Template Kwargs` は通常そのままで使います。
     * 一般の Gemma 4 系モデルを試す場合は、**チャットテンプレモード: `汎用`**、Thinking Template: **`Gemma 4（一般用）`** を選びます。KoboldCpp 側では **Use Jinja** に加えて、`Chat Template Kwargs` に `{"enable_thinking":true}` を指定してください。
     * リアルタイム提案では思考モードは使用しません。短い補完候補ではなく、通常の小説生成・アイデア出しで使う機能です。
 * **チャットテンプレモードの追加:**
     * `旧wanabiシリーズ` と `汎用` を選べるようになりました。
     * `旧wanabiシリーズ` は、従来の wanabi 向けプロンプト形式を Project Wannabe 側で組み立てるモードです。
-    * `汎用` は、KoboldCpp 側のチャットテンプレートを使うモデル向けのモードです。新しい思考対応 Wannabe モデルや Gemma 4 系の思考モードを使う場合はこちらを選びます。
+    * `汎用` は、KoboldCpp 側のチャットテンプレートを使うモデル向けのモードです。Wanabi-Gemma4-31B や Gemma 4 系の思考モードを使う場合はこちらを選びます。
     * 本文の続きを自然につなぐため、必要に応じて assistant prefill を使います。これは「ここから続けて書いてほしい」という書き出しを assistant 側に置く仕組みです。
 * **UI刷新:**
     * 本文、生成候補、サイドパネルを中心にした構成へ整理しました。
