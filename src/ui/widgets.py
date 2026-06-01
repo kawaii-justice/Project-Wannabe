@@ -11,8 +11,20 @@ class CollapsibleSection(QWidget):
     def __init__(self, title: str = "", parent: QWidget | None = None):
         super().__init__(parent)
 
+        self._base_button_style = "QToolButton { border: none; text-align: left; }"
+        self._highlighted_button_style = (
+            "QToolButton { "
+            "border: 1px solid #2f7d5b; "
+            "border-left: 4px solid #2f7d5b; "
+            "background-color: #e8f3ed; "
+            "color: #123b2a; "
+            "padding: 3px 6px; "
+            "text-align: left; "
+            "}"
+        )
+
         self.toggle_button = QToolButton(text=title, checkable=True, checked=False)
-        self.toggle_button.setStyleSheet("QToolButton { border: none; }")
+        self.toggle_button.setStyleSheet(self._base_button_style)
         self.toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.toggle_button.setArrowType(Qt.RightArrow)
         self.toggle_button.pressed.connect(self._on_pressed)
@@ -64,6 +76,11 @@ class CollapsibleSection(QWidget):
         if self.toggle_button.isChecked():
             self.content_area.setMaximumHeight(self.content_widget.sizeHint().height() + 10)
             self.updateGeometry()
+
+    def set_highlighted(self, highlighted: bool):
+        self.toggle_button.setStyleSheet(
+            self._highlighted_button_style if highlighted else self._base_button_style
+        )
 
     def eventFilter(self, watched, event):
         if watched is self.content_widget and event.type() in (QEvent.LayoutRequest, QEvent.Resize):

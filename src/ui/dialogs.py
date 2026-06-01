@@ -595,19 +595,19 @@ class GenerationParamsDialog(QDialog):
         main_layout.addLayout(form_layout)
         main_layout.addWidget(output_length_section)
 
-        prefill_thinking_section = CollapsibleSection("思考テンプレートと固定prefill")
+        prefill_thinking_section = CollapsibleSection("思考テンプレートと思考の書き出し")
         prefill_thinking_group = QGroupBox()
         prefill_thinking_layout = QVBoxLayout(prefill_thinking_group)
 
         prefill_thinking_desc = QLabel(
-            "思考モードで使うテンプレート形式と、思考の先頭に流し込む固定文を設定します。"
+            "思考モードで使うテンプレート形式と、思考の書き出しに入れる固定文を設定します。"
             " 本文のassistant prefillと衝突する場合は、先に思考だけを生成してから本番生成へ渡します。"
             " 1回目の思考抽出に失敗した場合は本番生成を中断します。"
         )
         prefill_thinking_desc.setWordWrap(True)
         prefill_thinking_layout.addWidget(prefill_thinking_desc)
 
-        self.thinking_prefill_enabled_checkbox = QCheckBox("思考の先頭に固定文を入れる")
+        self.thinking_prefill_enabled_checkbox = QCheckBox("思考の書き出しを入れる")
         self.thinking_prefill_enabled_checkbox.setChecked(
             self.current_settings.get(
                 "thinking_prefill_enabled",
@@ -617,7 +617,7 @@ class GenerationParamsDialog(QDialog):
         prefill_thinking_layout.addWidget(self.thinking_prefill_enabled_checkbox)
 
         self.thinking_prefill_text_edit = QPlainTextEdit()
-        self.thinking_prefill_text_edit.setPlaceholderText("思考の書き出しに使う固定文")
+        self.thinking_prefill_text_edit.setPlaceholderText("思考の書き出しに使う文")
         self.thinking_prefill_text_edit.setMaximumHeight(70)
         self.thinking_prefill_text_edit.setPlainText(
             self.current_settings.get(
@@ -625,7 +625,7 @@ class GenerationParamsDialog(QDialog):
                 DEFAULT_SETTINGS.get("thinking_prefill_text", ""),
             )
         )
-        prefill_thinking_layout.addWidget(QLabel("固定prefill文:"))
+        prefill_thinking_layout.addWidget(QLabel("思考の書き出し:"))
         prefill_thinking_layout.addWidget(self.thinking_prefill_text_edit)
 
         self.prefill_thinking_strategy_combo = QComboBox()
@@ -641,7 +641,7 @@ class GenerationParamsDialog(QDialog):
         )
         if strategy_index != -1:
             self.prefill_thinking_strategy_combo.setCurrentIndex(strategy_index)
-        prefill_thinking_layout.addWidget(QLabel("思考prefill形式:"))
+        prefill_thinking_layout.addWidget(QLabel("思考の書き出し形式:"))
         prefill_thinking_layout.addWidget(self.prefill_thinking_strategy_combo)
 
         self.prefill_thinking_custom_prefix_edit = QPlainTextEdit()

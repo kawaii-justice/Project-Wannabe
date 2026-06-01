@@ -140,7 +140,7 @@ class DetailsPanel(QWidget):
         self.assistant_thinking_prefill_edit.setEnabled(enabled)
         self.assistant_thinking_prefill_transfer_button.setEnabled(enabled)
         tooltip = (
-            "思考モードが有効な時だけ、ここに入力した思考をassistant prefillとして固定します。"
+            "思考モードが有効な時だけ、ここに入力した内容を固定思考として生成に渡します。"
             if enabled
             else "思考モードを有効にすると使用できます。"
         )
@@ -220,8 +220,15 @@ class DetailsPanel(QWidget):
         self.details_changed.emit()
 
     def _on_thinking_prefill_enabled_changed(self, checked: bool):
+        self._refresh_fixed_thinking_section_state()
         self.details_changed.emit()
         self.thinking_prefill_enabled_changed.emit(checked)
+
+    def _refresh_fixed_thinking_section_state(self):
+        section = getattr(self, "assistant_thinking_section", None)
+        checkbox = getattr(self, "assistant_thinking_prefill_checkbox", None)
+        if section is not None and checkbox is not None:
+            section.set_highlighted(checkbox.isChecked())
 
     def _as_text(self, value: Any) -> str:
         return "" if value is None else str(value)
@@ -345,11 +352,11 @@ class DetailsPanel(QWidget):
         details_layout.addWidget(dialogue_section)
 
     def _create_thinking_prefill_section(self, details_layout: QVBoxLayout):
-        assistant_thinking_section = CollapsibleSection("思考prefill (生成時)")
+        self.assistant_thinking_section = CollapsibleSection("固定思考 (生成時)")
         assistant_thinking_controls = QHBoxLayout()
-        self.assistant_thinking_prefill_checkbox = QCheckBox("思考を固定（思考有効時のみ）")
+        self.assistant_thinking_prefill_checkbox = QCheckBox("有効化")
         self.assistant_thinking_prefill_checkbox.setToolTip(
-            "思考モードが有効な時だけ、ここに入力した思考をassistant prefillとして固定します。"
+            "思考モードが有効な時だけ、ここに入力した内容を固定思考として生成に渡します。"
         )
         self.assistant_thinking_prefill_transfer_button = QPushButton("← 選択思考を転記")
         self.assistant_thinking_prefill_transfer_button.setFocusPolicy(Qt.NoFocus)
@@ -362,12 +369,12 @@ class DetailsPanel(QWidget):
 
         self.assistant_thinking_prefill_edit = QPlainTextEdit()
         self.assistant_thinking_prefill_edit.setPlaceholderText(
-            "出力欄の思考など、あらかじめ流し込みたい思考を入力..."
+            "出力欄の思考など、生成時に固定したい思考を入力..."
         )
         self.assistant_thinking_prefill_edit.setMinimumHeight(90)
-        assistant_thinking_section.content_layout.addLayout(assistant_thinking_controls)
-        assistant_thinking_section.addWidget(self.assistant_thinking_prefill_edit)
-        details_layout.addWidget(assistant_thinking_section)
+        self.assistant_thinking_section.content_layout.addLayout(assistant_thinking_controls)
+        self.assistant_thinking_section.addWidget(self.assistant_thinking_prefill_edit)
+        details_layout.addWidget(self.assistant_thinking_section)
 
     def _create_transfer_button(self, metadata_key: str) -> QPushButton:
         button = QPushButton("← 転記")

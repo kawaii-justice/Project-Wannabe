@@ -76,7 +76,7 @@ Project Wannabe には、AI への送り方が2種類あります。
 | セリフ量 | `metadata.dialogue_level` |
 | レーティング | `rating` |
 | System Prompt | `system_prompt` |
-| 思考 prefill | thinking 関連処理で使用 |
+| 固定思考 | thinking 関連処理で使用 |
 
 メモ欄は、通常の生成プロンプトには含まれません。必要な内容は、本文や詳細情報へ移して使います。
 
